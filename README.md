@@ -1,4 +1,4 @@
-# stormrider-weather-data
+# stormrider-data
 
 GFS → PNG pipeline for the Stormrider weather globe.
 Runs on GitHub Actions cron; publishes to Cloudflare R2.
