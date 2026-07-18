@@ -26,6 +26,15 @@ def test_decode_frame_shapes_and_ranges():
     assert fields["prate_mmh"].max() < 500  # mm/h 合理上限
 
 
+def test_decode_frame_handles_dual_steptype_prate():
+    # f003+ 的 PRATE 同時有 instant 與 avg 兩種 stepType — regression for the
+    # DatasetBuildError seen on the first real Actions run
+    fixture = Path(__file__).parent / "fixtures" / "sample_f003.grib2"
+    fields = decode_frame(fixture.read_bytes())
+    assert fields["prate_mmh"].shape == EXPECTED_SHAPE
+    assert fields["prate_mmh"].min() >= 0
+
+
 def test_decode_frame_rejects_wrong_shape():
     import pytest
 

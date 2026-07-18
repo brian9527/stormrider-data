@@ -30,7 +30,7 @@ def decode_frame(grib_bytes: bytes) -> dict[str, np.ndarray]:
         f.write(grib_bytes)
         f.flush()
         wind = _open(f.name, {"typeOfLevel": "heightAboveGround", "level": 10})
-        surface = _open(f.name, {"typeOfLevel": "surface"})
+        surface = _open(f.name, {"typeOfLevel": "surface", "stepType": "instant"})
         raw = {
             "u": wind["u10"].values,
             "v": wind["v10"].values,
