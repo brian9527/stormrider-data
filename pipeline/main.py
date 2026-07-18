@@ -33,6 +33,7 @@ def run(
 
     manifest_key = r2.cycle_key(cycle.cycle_id, "manifest.json")
     if r2.object_exists(client, bucket, manifest_key):
+        _ensure_latest_current(client, bucket, cycle, log)
         return f"skipped {cycle.cycle_id} (already published)"
 
     for hour in FORECAST_HOURS:
@@ -62,6 +63,18 @@ def run(
         r2.delete_cycle(client, bucket, old)
 
     return f"published {cycle.cycle_id}"
+
+
+def _ensure_latest_current(client, bucket: str, cycle: Cycle, log) -> None:
+    """已發布但 latest.json 缺失/過舊時修復（path 格式固定，字典序 = 時間序）。"""
+    current = r2.get_json(client, bucket, r2.LATEST_KEY)
+    target = build_latest(cycle)
+    if current is None or current.get("path", "") < target["path"]:
+        log("repairing stale latest.json")
+        r2.upload_bytes(
+            client, bucket, r2.LATEST_KEY,
+            json.dumps(target).encode(), r2.CACHE_LATEST,
+        )
 
 
 def _select_cycle(now: datetime, check_complete, log) -> Cycle:

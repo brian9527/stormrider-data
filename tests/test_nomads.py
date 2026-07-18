@@ -45,6 +45,13 @@ def test_cycle_is_complete_checks_last_frame_idx():
     assert cycle_is_complete(CYCLE, session=session) is False
 
 
+def test_cycle_is_complete_raises_on_server_error():
+    session = MagicMock()
+    session.head.return_value = MagicMock(status_code=503)
+    with pytest.raises(RuntimeError):
+        cycle_is_complete(CYCLE, session=session)
+
+
 def test_download_retries_then_succeeds():
     session = MagicMock()
     ok = MagicMock(status_code=200, content=b"x" * 20_000)

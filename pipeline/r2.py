@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import boto3
 
 CACHE_IMMUTABLE = "public, max-age=86400, immutable"
@@ -44,8 +46,23 @@ def object_exists(client, bucket: str, key: str) -> bool:
     try:
         client.head_object(Bucket=bucket, Key=key)
         return True
-    except client.exceptions.ClientError:
-        return False
+    except client.exceptions.ClientError as e:
+        code = str(e.response.get("Error", {}).get("Code", ""))
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return False
+        raise
+
+
+def get_json(client, bucket: str, key: str):
+    """回傳 JSON 物件；不存在回 None，其他錯誤照樣 raise。"""
+    try:
+        resp = client.get_object(Bucket=bucket, Key=key)
+    except client.exceptions.ClientError as e:
+        code = str(e.response.get("Error", {}).get("Code", ""))
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return None
+        raise
+    return json.loads(resp["Body"].read())
 
 
 def list_cycle_ids(client, bucket: str) -> list[str]:

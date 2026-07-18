@@ -5,6 +5,10 @@ on:
     - cron: "30 4,10,16,22 * * *"  # 每輪 GFS (00/06/12/18Z) + 4.5h 發布 lag
   workflow_dispatch:
 
+concurrency:
+  group: update-weather-data
+  cancel-in-progress: false
+
 jobs:
   update:
     runs-on: ubuntu-latest

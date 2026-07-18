@@ -14,15 +14,26 @@ ENV = {
 NOW = datetime(2026, 7, 18, 10, 35, tzinfo=timezone.utc)  # → 最新候選 06Z
 
 
+class FakeClientError(Exception):
+    def __init__(self, code="404"):
+        super().__init__(code)
+        self.response = {"Error": {"Code": code}}
+
+
 def make_fakes(*, manifest_exists=False, complete=True):
     import numpy as np
 
     client = MagicMock()
-    client.exceptions.ClientError = Exception
+    client.exceptions.ClientError = FakeClientError
     if manifest_exists:
         client.head_object.return_value = {}
+        client.get_object.return_value = {
+            "Body": MagicMock(read=lambda: json.dumps(
+                {"cycle": "2026-07-18T06:00Z", "path": "gfs/20260718T06/"}
+            ).encode())
+        }
     else:
-        client.head_object.side_effect = Exception("404")
+        client.head_object.side_effect = FakeClientError("404")
     client.list_objects_v2.return_value = {"CommonPrefixes": [], "Contents": []}
     fields = {
         "u": np.zeros((721, 1440), dtype=np.float32),
@@ -59,6 +70,30 @@ def test_skips_when_manifest_already_uploaded():
     client, deps = make_fakes(manifest_exists=True)
     assert run(NOW, ENV, **deps) == "skipped 20260718T06 (already published)"
     client.put_object.assert_not_called()
+
+
+def test_skip_repairs_missing_latest():
+    client, deps = make_fakes(manifest_exists=True)
+    client.get_object.side_effect = FakeClientError("NoSuchKey")
+    result = run(NOW, ENV, **deps)
+    assert result == "skipped 20260718T06 (already published)"
+    keys = uploaded_keys(client)
+    assert keys == ["gfs/latest.json"]
+
+
+def test_skip_does_not_touch_current_latest():
+    client, deps = make_fakes(manifest_exists=True)
+    run(NOW, ENV, **deps)
+    client.put_object.assert_not_called()
+
+
+def test_head_error_propagates():
+    import pytest
+
+    client, deps = make_fakes()
+    client.head_object.side_effect = FakeClientError("403")
+    with pytest.raises(FakeClientError):
+        run(NOW, ENV, **deps)
 
 
 def test_falls_back_to_previous_cycle_when_incomplete():

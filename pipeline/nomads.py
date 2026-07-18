@@ -36,9 +36,17 @@ def idx_url(cycle: Cycle, forecast_hour: int) -> str:
 
 
 def cycle_is_complete(cycle: Cycle, session=requests) -> bool:
-    """最後一個預報檔 (f048) 的 .idx 存在 = 整輪已發布齊全。"""
+    """最後一個預報檔 (f048) 的 .idx 存在 = 整輪已發布齊全。
+
+    200 → True；404 → False；其他狀態（403/5xx/429）→ raise，fail loudly，
+    不可誤判成「未齊全」而退到舊輪次。
+    """
     resp = session.head(idx_url(cycle, LAST_FORECAST_HOUR), timeout=30)
-    return resp.status_code == 200
+    if resp.status_code == 200:
+        return True
+    if resp.status_code == 404:
+        return False
+    raise RuntimeError(f"NOMADS completeness check failed: HTTP {resp.status_code}")
 
 
 def download_grib(
