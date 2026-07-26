@@ -17,6 +17,11 @@ def grib_filename(cycle: Cycle, forecast_hour: int) -> str:
 
 
 def filter_params(cycle: Cycle, forecast_hour: int) -> dict[str, str]:
+    # var_TMP × lev_surface,lev_2_m_above_ground 是笛卡兒積：NOMADS 也會多回傳一個
+    # 用不到的 surface skin temperature（typeOfLevel=surface, shortName=t）欄位，
+    # 跟 PRATE 共用同一個 lev_surface 沒有更精簡的過濾方式。decode.py 只讀
+    # heightAboveGround level=2 的 t2m，這個多的欄位被忽略、不影響正確性，
+    # 只是每輪每個時點多一點下載量。
     return {
         "dir": f"/gfs.{cycle.date_str}/{cycle.hour_str}/atmos",
         "file": grib_filename(cycle, forecast_hour),
