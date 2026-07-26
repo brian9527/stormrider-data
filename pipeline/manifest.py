@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from pipeline.cycles import FORECAST_HOURS, Cycle
-from pipeline.encode import PRECIP_MAX_MMH, WIND_MAX, WIND_MIN
+from pipeline.encode import PRECIP_MAX_MMH, TEMP_MAX_C, TEMP_MIN_C, WIND_MAX, WIND_MIN
 
 
 def _iso_z(dt: datetime) -> str:
@@ -27,6 +27,12 @@ def build_manifest(cycle: Cycle) -> dict:
                 "max": PRECIP_MAX_MMH,
                 "unit": "mm/h",
             },
+            "temp": {
+                "encoding": "linear",
+                "min": TEMP_MIN_C,
+                "max": TEMP_MAX_C,
+                "unit": "°C",
+            },
         },
         "frames": [
             {
@@ -34,6 +40,7 @@ def build_manifest(cycle: Cycle) -> dict:
                 "validTime": _iso_z(cycle.valid_time(h)),
                 "wind": f"wind_f{h:03d}.png",
                 "precip": f"precip_f{h:03d}.png",
+                "temp": f"temp_f{h:03d}.png",
             }
             for h in FORECAST_HOURS
         ],

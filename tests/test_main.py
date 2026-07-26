@@ -39,6 +39,7 @@ def make_fakes(*, manifest_exists=False, complete=True):
         "u": np.zeros((721, 1440), dtype=np.float32),
         "v": np.zeros((721, 1440), dtype=np.float32),
         "prate_mmh": np.zeros((721, 1440), dtype=np.float32),
+        "temp_c": np.full((721, 1440), 15.3, dtype=np.float32),
     }
     deps = {
         "client_factory": lambda *a: client,
@@ -58,10 +59,22 @@ def test_publishes_full_cycle_then_latest_last():
     result = run(NOW, ENV, **deps)
     assert result == "published 20260718T06"
     keys = uploaded_keys(client)
-    # 17 wind + 17 precip + manifest + latest
-    assert len(keys) == len(FORECAST_HOURS) * 2 + 2
+    # 17 wind + 17 precip + 17 temp + manifest + latest
+    assert len(keys) == len(FORECAST_HOURS) * 3 + 2
+    expected_frame_keys = [
+        f"gfs/20260718T06/{variable}_f{hour:03d}.png"
+        for hour in FORECAST_HOURS
+        for variable in ("wind", "precip", "temp")
+    ]
+    assert keys[:-2] == expected_frame_keys
     assert keys[-1] == "gfs/latest.json"
     assert keys[-2] == "gfs/20260718T06/manifest.json"
+    manifest_body = client.put_object.call_args_list[-2].kwargs["Body"]
+    manifest = json.loads(manifest_body)
+    assert set(manifest["variables"]) == {"wind", "precip", "temp"}
+    assert [frame["temp"] for frame in manifest["frames"]] == [
+        f"temp_f{hour:03d}.png" for hour in FORECAST_HOURS
+    ]
     latest_body = client.put_object.call_args_list[-1].kwargs["Body"]
     assert json.loads(latest_body)["path"] == "gfs/20260718T06/"
 

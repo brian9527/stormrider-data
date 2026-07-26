@@ -43,3 +43,17 @@ def encode_precip_png(rate_mmh: np.ndarray) -> bytes:
 
 def decode_precip_pixel(pixel):
     return (pixel / 255.0) ** 2 * PRECIP_MAX_MMH
+
+
+TEMP_MIN_C = -60.0
+TEMP_MAX_C = 50.0
+
+
+def encode_temp_png(temp_c: np.ndarray) -> bytes:
+    """灰階，線性映射：pixel = (temp_c - min) / (max - min) * 255。"""
+    pixels = _quantize_linear(temp_c, TEMP_MIN_C, TEMP_MAX_C)
+    return _to_png(pixels, mode="L")
+
+
+def decode_temp_pixel(pixel):
+    return pixel / 255.0 * (TEMP_MAX_C - TEMP_MIN_C) + TEMP_MIN_C

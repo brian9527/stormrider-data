@@ -24,8 +24,15 @@ def test_filter_params_variables_and_levels():
     p = filter_params(CYCLE, 3)
     assert p["dir"] == "/gfs.20260718/06/atmos"
     assert p["file"] == "gfs.t06z.pgrb2.0p25.f003"
-    for key in ("var_UGRD", "var_VGRD", "var_PRATE",
-                "lev_10_m_above_ground", "lev_surface"):
+    for key in (
+        "var_UGRD",
+        "var_VGRD",
+        "var_PRATE",
+        "var_TMP",
+        "lev_10_m_above_ground",
+        "lev_surface",
+        "lev_2_m_above_ground",
+    ):
         assert p[key] == "on"
 
 

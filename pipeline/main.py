@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pipeline import decode as decode_mod
 from pipeline import nomads, r2
 from pipeline.cycles import FORECAST_HOURS, Cycle, candidate_cycles
-from pipeline.encode import encode_precip_png, encode_wind_png
+from pipeline.encode import encode_precip_png, encode_temp_png, encode_wind_png
 from pipeline.manifest import build_latest, build_manifest
 
 KEEP_CYCLES = 3
@@ -46,6 +46,10 @@ def run(
         r2.upload_bytes(
             client, bucket, r2.cycle_key(cycle.cycle_id, f"precip_f{hour:03d}.png"),
             encode_precip_png(fields["prate_mmh"]), r2.CACHE_IMMUTABLE,
+        )
+        r2.upload_bytes(
+            client, bucket, r2.cycle_key(cycle.cycle_id, f"temp_f{hour:03d}.png"),
+            encode_temp_png(fields["temp_c"]), r2.CACHE_IMMUTABLE,
         )
 
     r2.upload_bytes(

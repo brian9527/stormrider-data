@@ -23,8 +23,10 @@ def filter_params(cycle: Cycle, forecast_hour: int) -> dict[str, str]:
         "var_UGRD": "on",
         "var_VGRD": "on",
         "var_PRATE": "on",
+        "var_TMP": "on",
         "lev_10_m_above_ground": "on",
         "lev_surface": "on",
+        "lev_2_m_above_ground": "on",
     }
 
 

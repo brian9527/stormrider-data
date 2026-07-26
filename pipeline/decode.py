@@ -22,7 +22,7 @@ def _open(path: str, filter_by_keys: dict) -> xr.Dataset:
 
 
 def decode_frame(grib_bytes: bytes) -> dict[str, np.ndarray]:
-    """GRIB2 → {'u','v','prate_mmh'}，皆 float32 (721,1440)，lon 已轉 -180..180。
+    """GRIB2 → {'u','v','prate_mmh','temp_c'}，皆 float32 (721,1440)，lon 已轉 -180..180。
 
     網格形狀不符預期（GFS 改版）時直接 raise — fail loudly，不猜。
     """
@@ -31,10 +31,15 @@ def decode_frame(grib_bytes: bytes) -> dict[str, np.ndarray]:
         f.flush()
         wind = _open(f.name, {"typeOfLevel": "heightAboveGround", "level": 10})
         surface = _open(f.name, {"typeOfLevel": "surface", "stepType": "instant"})
+        temp = _open(
+            f.name,
+            {"typeOfLevel": "heightAboveGround", "level": 2, "stepType": "instant"},
+        )
         raw = {
             "u": wind["u10"].values,
             "v": wind["v10"].values,
             "prate_mmh": surface["prate"].values * 3600.0,  # kg/m²/s = mm/s → mm/h
+            "temp_c": temp["t2m"].values - 273.15,  # K → °C
         }
     out: dict[str, np.ndarray] = {}
     for name, arr in raw.items():
