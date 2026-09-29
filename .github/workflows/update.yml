@@ -27,3 +27,16 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: stormrider-weather
+
+  # repo 連續 60 天無活動時 GitHub 會自動停用排程 workflow；管線本身很少改 code，
+  # 所以每次執行都呼叫 enable API 嘗試重置計時。這是 keepalive-workflow v2 的做法，
+  # GitHub 並未文件保證它會重置計時；若仍收到停用通知，改用定期空 commit。
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/update.yml/enable"
+        env:
+          GH_TOKEN: ${{ github.token }}
