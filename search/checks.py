@@ -4,9 +4,10 @@ from __future__ import annotations
 import math
 from datetime import date, datetime
 
-# First-publish floors. Task 4 replaces these with 80% of the first real build's counts.
-PLACES_FLOOR = 300_000
-NEARBY_FLOOR = 1_000
+# First-publish floors: 80% of the first real build, rounded down to the thousand (local run
+# 2026-10-19, build 20261019T031636Z: 525,789 places and 19,367 nearby candidates).
+PLACES_FLOOR = 420_000
+NEARBY_FLOOR = 15_000
 MAX_DROP = 0.10
 PROBE_PASS_RATIO = 0.9
 # The build date says nothing about how old the inputs are; a stalled upstream would otherwise look

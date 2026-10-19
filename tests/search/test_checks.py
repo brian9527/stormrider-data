@@ -5,11 +5,11 @@ from search.checks import (PROBES, CheckFailed, check_counts, check_source_fresh
 
 
 def test_first_publish_needs_the_floors():
-    check_counts(400_000, 5_000, None)
+    check_counts(430_000, 16_000, None)
     with pytest.raises(CheckFailed):
-        check_counts(10, 5_000, None)
+        check_counts(419_999, 16_000, None)
     with pytest.raises(CheckFailed):
-        check_counts(400_000, 10, None)
+        check_counts(430_000, 14_999, None)
 
 
 def test_a_drop_over_ten_percent_stops_publishing():

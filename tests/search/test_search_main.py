@@ -91,7 +91,7 @@ def main_run(tmp_path, monkeypatch):
     # Exercise the CLI's actual gates, with every external boundary replaced.
     out = {
         "places": {"path": tmp_path / "places.ndjson.gz", "documents": 600_000, "sha256": "a" * 64},
-        "nearby": {"path": tmp_path / "nearby.ndjson.gz", "documents": 5_000, "sha256": "b" * 64},
+        "nearby": {"path": tmp_path / "nearby.ndjson.gz", "documents": 20_000, "sha256": "b" * 64},
         "probes": {"path": tmp_path / "probes.json", "sha256": "c" * 64},
         "header": {}, "timestamps": {"photon": "2026-10-31", "geofabrik": "2026-10-30"},
         "dataDate": "2026-10-30", "stats": {"places": {"decode_errors": 0}, "nearby": {}},
@@ -102,7 +102,7 @@ def main_run(tmp_path, monkeypatch):
         monkeypatch.setattr(search.main, name, mocks[name])
     mocks["download"].return_value = {"sha256": "d" * 64, "md5": "e" * 32, "bytes": 42}
     mocks["build_outputs"].return_value = out
-    mocks["previous_counts"].return_value = {"places": 600_000, "nearby": 5_000}
+    mocks["previous_counts"].return_value = {"places": 600_000, "nearby": 20_000}
     clock = Mock()
     clock.now.return_value = datetime(2026, 11, 1, 18, 30, tzinfo=timezone.utc)
     monkeypatch.setattr(search.main, "datetime", clock)
@@ -142,7 +142,7 @@ def test_main_never_publishes_when_a_gate_fails(main_run, reason):
     elif reason == "places_drop":
         run.out["places"]["documents"] = 539_999
     elif reason == "nearby_drop":
-        run.out["nearby"]["documents"] = 4_499
+        run.out["nearby"]["documents"] = 17_999
     else:
         run._probe_check.side_effect = CheckFailed("probes passed 8/10")
     with pytest.raises(CheckFailed, match=messages[reason]):

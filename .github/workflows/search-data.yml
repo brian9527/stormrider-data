@@ -1,0 +1,47 @@
+name: update-search-data
+
+on:
+  schedule:
+    - cron: "30 18 1 * *"  # UTC 每月 1 號 18:30 = 台灣時間 2 號 02:30（spec B §3.1）
+  workflow_dispatch:
+
+# Only this workflow publishes to R2, one run at a time: search/publish.py relies on it when it
+# checks that a build folder is empty before writing (plan Task 3).
+concurrency:
+  group: update-search-data
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # 用 R2 寫入金鑰，只在 main 上跑；這個 workflow 沒有 pull_request 觸發，fork 拿不到 secrets。
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    services:
+      meilisearch:
+        # getmeili/meilisearch v1.54.0 社群版（多架構 index digest，授權查核 2026-10-14）
+        image: getmeili/meilisearch@sha256:0bf32debcbfa8ba4e418679025f4935884972171513c92f0584689ff994a61df
+        env:
+          MEILI_ENV: development
+          MEILI_MASTER_KEY: ci-probe-check-only-not-a-secret
+          MEILI_NO_ANALYTICS: "true"
+          MEILI_MAX_INDEXING_MEMORY: 4Gb
+        ports:
+          - 7700:7700
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-search.txt
+      - run: pip install -r requirements-search.txt
+      - run: pytest tests/search
+      - run: python -m search.main --workdir "$RUNNER_TEMP/search"
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: stormrider-weather
+          MEILI_URL: http://127.0.0.1:7700
+          MEILI_MASTER_KEY: ci-probe-check-only-not-a-secret
