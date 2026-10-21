@@ -1,8 +1,9 @@
 """Photon dump → place documents for Meilisearch (backend B spec §3.3).
 
 The rules are the M version of the engine comparison (research 2026-10-12, TEST-PLAN §1.1) plus
-three additions: same-name roads merged per district, never-a-destination categories removed, and
-gzip ndjson output."""
+these additions: same-name roads merged per district, never-a-destination categories removed,
+gzip ndjson output, and two kinds of extra aliases (spec decision 16): the other spelling of 台／臺,
+and the brand with its branch name."""
 from __future__ import annotations
 
 import gzip
@@ -36,6 +37,42 @@ class PlaceStats:
 
     def as_dict(self) -> dict:
         return asdict(self)
+
+
+def tai_variants(text: str) -> list[str]:
+    """The same text with 台 for 臺 and with 臺 for 台. Riders type either; OSM often writes 臺,
+    and Meilisearch treats them as different characters (research 2026-10-18 §6)."""
+    out = []
+    if "臺" in text:
+        out.append(text.replace("臺", "台"))
+    if "台" in text:
+        out.append(text.replace("台", "臺"))
+    return out
+
+
+def _joined(base: str, part: str) -> list[str]:
+    """「base part」 and 「basepart」, unless one already contains the other."""
+    # Some records already put the full branch name in either field. Keep that name instead of
+    # inventing aliases such as 「全家 全家林口店」 or 「全家林口店 林口店」.
+    if base.endswith(part):
+        return []
+    if part.startswith(base):
+        return [part]
+    return [f"{base} {part}", f"{base}{part}"]
+
+
+def branch_aliases(name: str, branch, brand=None) -> list[str]:
+    """OSM keeps a branch in its own tag, and most branches are named after the brand alone (every
+    全家 is called 全家), so 「全聯福利中心 林口麗都店」 only matches with this alias. A record named
+    after the branch alone (林口麗都店, with the brand in its own tag) gets the brand in front."""
+    n = name.strip()
+    b = branch.strip() if isinstance(branch, str) else ""
+    br = brand.strip() if isinstance(brand, str) else ""
+    out = _joined(n, b) if b else []
+    # Only when name and brand are unrelated: 「全家」 with brand 「全家便利商店」 needs nothing.
+    if br and br not in n and n not in br:
+        out += _joined(br, b or n)
+    return out
 
 
 def split_names(value) -> list[str]:
@@ -76,6 +113,8 @@ def make_doc(record: dict, n: int) -> dict | None:
             aliases += split_names(v)
     for fld in NAME_EXTRA:
         aliases += split_names(extra.get(fld))
+    aliases += branch_aliases(name, extra.get("branch"), extra.get("brand"))
+    aliases += [v for text in [name, *aliases] for v in tai_variants(text.strip())]
     wikidata = extra.get("wikidata")
     importance = record.get("importance")
     return {

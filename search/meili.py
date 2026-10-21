@@ -10,6 +10,7 @@ import requests
 PLACES_SETTINGS = {
     "searchableAttributes": ["name", "aliases", "where"],
     "displayedAttributes": ["*"],
+    "filterableAttributes": ["_geo"],
     "sortableAttributes": ["_geo"],
     "distinctAttribute": "key",
     "localizedAttributes": [{"attributePatterns": ["name", "aliases", "where"], "locales": ["cmn"]}],

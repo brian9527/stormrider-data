@@ -110,7 +110,8 @@ def test_build_documents_merges_same_name_roads_per_district():
     stats = PlaceStats()
     docs = list(build_documents(records, stats))
     assert sorted(d["key"] for d in docs) == ["N2", "N3", "N4", "N5", "N6"]
-    assert next(d for d in docs if d["key"] == "N2")["aliases"] == ["台9線"]
+    # The merged road keeps the alias, with its other 台／臺 spelling (spec decision 16).
+    assert next(d for d in docs if d["key"] == "N2")["aliases"] == ["台9線", "臺9線"]
     assert (stats.records, stats.roads_merged_away, stats.documents) == (6, 1, 5)
 
 
@@ -315,9 +316,59 @@ def test_make_doc_normalizes_aliases_and_uses_only_supported_extra_names():
                "brand": "not an alias", "wikidata": 123},
         address={"county": " 臺北市 ", "city": "\t", "suburb": " 大安區 ", "road": "ignored"},
     ), 0)
-    assert doc["aliases"] == sorted(["Cafe", "小店", "正式名稱"])
+    # The brand is never an alias by itself; an unrelated brand only joins the name (spec decision 16).
+    assert doc["aliases"] == sorted(["Cafe", "小店", "正式名稱", "not an alias 咖啡店", "not an alias咖啡店"])
     assert doc["where"] == "臺北市 大安區"
     assert doc["wikidata"] is None
+
+
+def test_make_doc_adds_the_other_spelling_of_tai_for_the_name_and_every_alias():
+    doc = make_doc(rec(name={"name": "臺中國家歌劇院", "alt_name": "台中歌劇院"}), 0)
+    assert doc["aliases"] == sorted(["台中國家歌劇院", "台中歌劇院", "臺中歌劇院"])
+    both = make_doc(rec(name={"name": "台北臺大"}), 0)
+    assert both["aliases"] == sorted(["台北台大", "臺北臺大"])
+    assert make_doc(rec(name={"name": "咖啡店"}), 0)["aliases"] == []
+
+
+def test_make_doc_adds_brand_and_branch_aliases_only_from_a_nonblank_branch():
+    doc = make_doc(rec(name={"name": "全聯福利中心"}, extra={"brand": "全聯福利中心", "branch": " 林口麗都店 "}), 0)
+    assert doc["aliases"] == sorted(["全聯福利中心 林口麗都店", "全聯福利中心林口麗都店"])
+    tai = make_doc(rec(name={"name": "台灣中油"}, extra={"branch": "臺東站"}), 0)
+    assert set(tai["aliases"]) >= {"台灣中油 臺東站", "台灣中油臺東站", "台灣中油 台東站", "臺灣中油 臺東站", "臺灣中油"}
+    for branch in [None, "", "  ", 7, ["店"]]:
+        assert make_doc(rec(name={"name": "全家"}, extra={"branch": branch}), 0)["aliases"] == []
+
+
+@pytest.mark.parametrize("name,branch,expected", [
+    ("全家", " 全家林口店 ", ["全家林口店"]),
+    ("全家", "全家 林口店", ["全家 林口店"]),
+    ("全家林口店", "林口店", []),
+    ("全家 林口店", "林口店", []),
+    ("全家", "全家", []),
+    ("中山咖啡", "中山", ["中山咖啡 中山", "中山咖啡中山"]),
+])
+def test_branch_aliases_do_not_repeat_a_brand_or_branch_already_in_the_name(name, branch, expected):
+    doc = make_doc(rec(name={"name": name}, extra={"branch": branch}), 0)
+    assert doc["name"] == name
+    assert doc["aliases"] == expected
+
+
+def test_tai_variants_preserve_original_names_and_deduplicate_all_alias_sources():
+    doc = make_doc(rec(
+        name={"name": "台北臺大", "alt_name": "台北臺大;台北台大;臺北臺大"},
+        extra={"short_name": "台北台大", "official_name": "臺北臺大"},
+    ), 0)
+    assert doc["name"] == "台北臺大"
+    assert doc["aliases"] == sorted(["台北台大", "臺北臺大"])
+
+
+def test_tai_alias_growth_is_bounded_even_with_many_mixed_characters():
+    name = "台臺" * 40
+    doc = make_doc(rec(name={"name": name}, extra={"branch": "分店"}), 0)
+    # Two branch spellings, plus at most two normalized variants per input string. This must
+    # stay linear, not enumerate all 2**80 spellings of the individual characters.
+    assert len(doc["aliases"]) == 8
+    assert all(len(alias) <= len(name) + len(" 分店") for alias in doc["aliases"])
 
 
 def test_make_doc_preserves_m_name_whitespace_even_when_alias_is_trimmed_name():
@@ -425,3 +476,42 @@ def test_zstd_reader_bounds_what_one_input_chunk_can_expand_to():
         total += n
     assert total == len(raw)
     assert max(sizes) <= (64 // 4 + 1) * (128 << 10)
+
+
+def test_make_doc_puts_the_brand_in_front_of_a_name_that_is_only_the_branch():
+    doc = make_doc(rec(name={"name": "林口麗都店"}, extra={"brand": "全聯福利中心"}), 0)
+    assert set(doc["aliases"]) == {"全聯福利中心 林口麗都店", "全聯福利中心林口麗都店"}
+    both = make_doc(rec(name={"name": "林口麗都店"}, extra={"brand": "全聯福利中心", "branch": "林口麗都店"}), 0)
+    assert set(both["aliases"]) == {"全聯福利中心 林口麗都店", "全聯福利中心林口麗都店"}
+
+
+def test_make_doc_adds_nothing_when_the_name_and_the_brand_overlap():
+    assert make_doc(rec(name={"name": "全家"}, extra={"brand": "全家便利商店"}), 0)["aliases"] == []
+    assert make_doc(rec(name={"name": "全家便利商店"}, extra={"brand": "全家"}), 0)["aliases"] == []
+    assert make_doc(rec(name={"name": "全家便利商店"}, extra={"brand": "全家便利商店"}), 0)["aliases"] == []
+
+
+@pytest.mark.parametrize("brand", [None, "", "  ", 7, ["全聯福利中心"]])
+def test_make_doc_ignores_invalid_or_blank_brands(brand):
+    doc = make_doc(rec(name={"name": "林口麗都店"}, extra={"brand": brand}), 0)
+    assert doc["aliases"] == []
+
+
+def test_make_doc_joins_an_english_brand_with_a_branch_without_a_standalone_brand_alias():
+    doc = make_doc(rec(name={"name": "林口店"}, extra={"brand": " FamilyMart "}), 0)
+    assert doc["aliases"] == sorted(["FamilyMart 林口店", "FamilyMart林口店"])
+    explicit = make_doc(rec(name={"name": "全家"}, extra={"brand": "FamilyMart", "branch": "林口店"}), 0)
+    assert set(explicit["aliases"]) == {"全家 林口店", "全家林口店", "FamilyMart 林口店", "FamilyMart林口店"}
+
+
+def test_make_doc_never_promotes_an_operator_tag_to_a_brand_alias():
+    doc = make_doc(rec(name={"name": "中央停車場"}, extra={"operator": "停車管理公司"}), 0)
+    assert doc["aliases"] == []
+
+
+def test_make_doc_currently_trusts_brand_even_when_the_name_is_not_just_a_branch():
+    # An upstream operator mislabeled as brand is indistinguishable to this helper. This
+    # characterizes the current trust boundary; it does not validate the generated name.
+    doc = make_doc(rec(name={"name": "中央停車場"}, extra={"brand": "停車管理公司"}), 0)
+    assert doc["aliases"] == sorted(["停車管理公司 中央停車場", "停車管理公司中央停車場"])
+
