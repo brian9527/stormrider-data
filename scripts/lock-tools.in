@@ -1,0 +1,4 @@
+# The tools scripts/lock-requirements.sh runs inside its container. Locked with hashes in
+# scripts/lock-tools.txt, which that script regenerates together with the other lock files.
+pip==26.2.2
+pip-tools==7.6.2
