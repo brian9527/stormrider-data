@@ -108,11 +108,6 @@ def main(argv=None) -> int:
     build_config = out / "build-config.json"
     shutil.copyfile(graph_dir / CONFIG_NAME, build_config)
     manifest = build_manifest(build_id, built_at, source, data_date, tiles, checks, build_config, report)
-    # The tar and the configuration are out; what is left (the unpacked tiles, a link to the extract)
-    # is not needed again. A failed run keeps its folder for a look at what went wrong. Files the
-    # image wrote as root on a Linux runner may stay; that runner is thrown away after the job.
-    shutil.rmtree(graph_dir, ignore_errors=True)
-
     if publishing:
         check_source_fresh(data_date, built_at)
         client = make_client(os.environ["R2_ACCOUNT_ID"], os.environ["R2_ACCESS_KEY_ID"],
@@ -124,6 +119,12 @@ def main(argv=None) -> int:
         check_tiles_size(tiles.stat().st_size, None)
         if args.local_publish:
             local_publish(Path(args.local_publish), build_id, files, manifest)
+    # Keep the graph until validation and publishing have both succeeded, for diagnosis on failure.
+    # The tar and configuration are in out-<buildId>. Root-owned directories on Linux may remain;
+    # report that without turning a successful publication into a failure.
+    shutil.rmtree(graph_dir, ignore_errors=True)
+    if graph_dir.exists():
+        print(f"warning: could not fully remove graph folder {graph_dir}", flush=True)
     print(json.dumps({"published": publishing or bool(args.local_publish), "buildId": build_id}))
     return 0
 

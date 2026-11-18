@@ -48,19 +48,24 @@ def _env_args(env: dict) -> list[str]:
 
 
 def container_name(prefix: str, graph_dir: Path) -> str:
-    """One name per run: graph folders are named after the build id, so a container left behind by a
-    killed run never blocks the next one."""
+    """Use the build id from the graph folder to avoid name collisions with older builds.
+    A leftover check container can still occupy the requested host port."""
     return f"{prefix}-{graph_dir.name}"
 
 
 def _remove_container(name: str, run) -> None:
-    """Stops and removes a container; harmless when `--rm` already did. A hanging Docker must not
-    replace the error that brought us here."""
+    """Best-effort removal, including after a partially failed start. Cleanup failures must not
+    replace the error that brought us here; `--rm` may already have removed the container."""
     try:
-        run(["docker", "rm", "-f", name], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=CLEANUP_TIMEOUT_S)
+        result = run(["docker", "rm", "-f", name], check=False, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.PIPE, text=True, timeout=CLEANUP_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         print(f"warning: could not remove container {name} in {CLEANUP_TIMEOUT_S} s", flush=True)
+    except OSError as exc:
+        print(f"warning: could not remove container {name}: {exc}", flush=True)
+    else:
+        if result.returncode and "No such container:" not in (result.stderr or ""):
+            print(f"warning: could not remove container {name}: {(result.stderr or '').strip()}", flush=True)
 
 
 def build_command(graph_dir: Path) -> list[str]:
@@ -85,7 +90,7 @@ def build_graph(pbf: Path, graph_dir: Path, run=subprocess.run) -> Path:
     try:
         run(build_command(graph_dir), check=True)
     finally:
-        # A build cut short (Ctrl-C, a failed step) must not go on in the background.
+        # Attempt cleanup after Python errors or Ctrl-C; SIGTERM/SIGKILL can bypass this finally.
         _remove_container(container_name(BUILD_CONTAINER, graph_dir), run)
     tar = graph_dir / TAR_NAME
     if not tar.is_file() or tar.stat().st_size == 0:

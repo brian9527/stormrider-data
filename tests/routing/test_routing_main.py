@@ -68,6 +68,7 @@ def test_local_publish_writes_the_r2_layout(tmp_path, fakes):
     assert len(manifest["buildConfigSha256"]) == 64  # 〔計審 15〕
     assert json.loads((folder / "checks.json").read_text(encoding="utf-8"))["version"] == 1
     assert (folder / "LICENSE.md").read_text(encoding="utf-8").startswith("# StormRider routing graph")
+    assert not list((tmp_path / "w").glob("graph-*"))
 
 
 def test_failed_checks_publish_nothing(tmp_path, fakes):
@@ -96,6 +97,7 @@ def test_a_too_small_graph_is_refused(tmp_path, fakes):
     state["tar_bytes"] = 3_999
     with pytest.raises(CheckFailed):
         rmain.main(["--workdir", str(tmp_path / "w"), "--pbf-file", str(pbf), "--skip-publish"])
+    assert len(list((tmp_path / "w").glob("graph-*/valhalla.json"))) == 1
 
 
 def test_r2_publishing_is_refused_outside_github_actions(tmp_path, fakes, monkeypatch):
@@ -136,7 +138,7 @@ def r2_run(tmp_path, fakes, monkeypatch):
             "client": client, "previous": previous, "publish": publish}
 
 
-def test_r2_publish_keeps_verified_source_and_artifact_hashes(r2_run):
+def test_r2_publish_keeps_verified_source_and_artifact_hashes(r2_run, tmp_path):
     run = r2_run
     assert rmain.main(run["argv"]) == 0
     run["publish"].assert_called_once()
@@ -150,10 +152,11 @@ def test_r2_publish_keeps_verified_source_and_artifact_hashes(r2_run):
     config = files["tiles"].parent / "build-config.json"
     assert manifest["buildConfigSha256"] == hashlib.sha256(config.read_bytes()).hexdigest()
     run["previous"].assert_called_once_with(client, bucket)
+    assert not list((tmp_path / "w").glob("graph-*"))
 
 
 @pytest.mark.parametrize("reason", ["checks", "unknown_date", "stale", "size_drop"])
-def test_r2_publish_is_blocked_by_every_graph_gate(r2_run, monkeypatch, reason):
+def test_r2_publish_is_blocked_by_every_graph_gate(r2_run, monkeypatch, tmp_path, reason):
     run = r2_run
     if reason == "checks":
         run["state"]["problems"] = ["trace failed"]
@@ -169,6 +172,51 @@ def test_r2_publish_is_blocked_by_every_graph_gate(r2_run, monkeypatch, reason):
     run["publish"].assert_not_called()
     if reason != "size_drop":
         run["client"].assert_not_called()
+    graphs = list((tmp_path / "w").glob("graph-*/valhalla.json"))
+    assert len(graphs) == (0 if reason == "unknown_date" else 1)
+
+
+@pytest.mark.parametrize("stage", ["previous", "publish"])
+@pytest.mark.parametrize("error", [RuntimeError("R2 unavailable"), KeyboardInterrupt()])
+def test_r2_failures_and_interruptions_keep_the_graph_and_staged_artifacts(r2_run, tmp_path, stage, error):
+    r2_run[stage].side_effect = error
+    with pytest.raises(type(error)) as caught:
+        rmain.main(r2_run["argv"])
+    assert caught.value is error
+    work = tmp_path / "w"
+    assert len(list(work.glob("graph-*/valhalla.json"))) == 1
+    assert len(list(work.glob("out-*/tiles.tar"))) == 1
+
+
+def test_graph_is_available_during_publication_and_removed_only_afterwards(r2_run, tmp_path):
+    def publish(*args):
+        assert len(list((tmp_path / "w").glob("graph-*/valhalla.json"))) == 1
+
+    r2_run["publish"].side_effect = publish
+    assert rmain.main(r2_run["argv"]) == 0
+    r2_run["publish"].assert_called_once()
+    assert not list((tmp_path / "w").glob("graph-*"))
+
+
+def test_failed_local_publication_keeps_the_graph(tmp_path, fakes, monkeypatch):
+    pbf, _ = fakes
+    publish = Mock(side_effect=OSError("disk full"))
+    monkeypatch.setattr(rmain, "local_publish", publish)
+    with pytest.raises(OSError, match="disk full"):
+        rmain.main(["--workdir", str(tmp_path / "w"), "--pbf-file", str(pbf),
+                    "--local-publish", str(tmp_path / "site")])
+    assert len(list((tmp_path / "w").glob("graph-*/valhalla.json"))) == 1
+
+
+def test_undeletable_graph_warns_without_failing_a_completed_publish(r2_run, tmp_path, monkeypatch, capsys):
+    # Simulate rmtree(ignore_errors=True) leaving root-owned directories on a Linux bind mount.
+    remove = Mock()
+    monkeypatch.setattr(rmain.shutil, "rmtree", remove)
+    assert rmain.main(r2_run["argv"]) == 0
+    r2_run["publish"].assert_called_once()
+    graph, = (tmp_path / "w").glob("graph-*")
+    remove.assert_called_once_with(graph, ignore_errors=True)
+    assert f"warning: could not fully remove graph folder {graph}" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("override", [{"md5": "0" * 32}, {"url": "https://example.com/taiwan.pbf"}, {"bytes": 4}])

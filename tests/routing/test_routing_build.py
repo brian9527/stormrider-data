@@ -1,7 +1,10 @@
+import errno
+import subprocess
+from unittest.mock import Mock
+
 import pytest
 
-import subprocess
-
+import routing.build as rbuild
 from routing.build import (BUILD_CONTAINER, CHECK_CONTAINER, TAR_NAME, VALHALLA_IMAGE, BuildFailed, build_command,
                            build_graph, container_name, serve_command, serving)
 
@@ -15,6 +18,7 @@ def _builder(graph, calls, tar=True, config=True):
                 (graph / TAR_NAME).write_bytes(b"tiles")
             if config:
                 (graph / "valhalla.json").write_text("{}")
+        return subprocess.CompletedProcess(cmd, 0, stderr="")
     return run
 
 
@@ -42,8 +46,16 @@ def test_serve_binds_to_localhost_only(tmp_path):
     assert container_name(CHECK_CONTAINER, tmp_path) in cmd and "serve_tiles=True" in cmd
 
 
+@pytest.mark.parametrize("command", [build_command, serve_command])
+def test_docker_mount_uses_an_absolute_host_path_with_spaces(command):
+    # RUNNER_TEMP is on the host. Keep the mount as one argv element, without shell quoting.
+    graph = rbuild.Path(".build/graph folder")
+    cmd = command(graph, 8002) if command is serve_command else command(graph)
+    assert cmd[cmd.index("-v") + 1] == f"{graph.resolve()}:/custom_files"
+
+
 def test_container_names_follow_the_build_folder(tmp_path):
-    # A container left by a killed run never blocks the next one, whose folder is new.
+    # A container from an older build does not reserve the next build's name.
     a, b = tmp_path / "graph-20261101T183000Z", tmp_path / "graph-20261201T183000Z"
     assert container_name(BUILD_CONTAINER, a) == "sr-valhalla-build-graph-20261101T183000Z"
     assert container_name(BUILD_CONTAINER, a) != container_name(BUILD_CONTAINER, b)
@@ -57,6 +69,7 @@ def test_build_graph_needs_a_fresh_folder_and_returns_the_tar(tmp_path):
     run = _builder(graph, [])
     assert build_graph(pbf, graph, run=run) == graph / TAR_NAME
     assert (graph / "taiwan.osm.pbf").read_bytes() == b"pbf"
+    assert (graph / pbf.name).samefile(pbf)
     with pytest.raises(FileExistsError):
         build_graph(pbf, graph, run=run)
 
@@ -68,7 +81,8 @@ def test_build_graph_fails_without_a_tar(tmp_path):
         build_graph(pbf, tmp_path / "graph", run=_builder(tmp_path / "graph", [], tar=False))
 
 
-def test_a_failed_or_interrupted_build_removes_its_container(tmp_path):
+@pytest.mark.parametrize("error", [KeyboardInterrupt(), subprocess.CalledProcessError(125, ["docker", "run"])])
+def test_a_failed_or_interrupted_build_removes_its_container(tmp_path, error):
     pbf = tmp_path / "taiwan.osm.pbf"
     pbf.write_bytes(b"pbf")
     graph = tmp_path / "graph-20261101T183000Z"
@@ -77,16 +91,24 @@ def test_a_failed_or_interrupted_build_removes_its_container(tmp_path):
     def run(cmd, **kw):
         calls.append(cmd)
         if cmd[:2] == ["docker", "run"]:
-            raise KeyboardInterrupt  # Ctrl-C while the build runs
-    with pytest.raises(KeyboardInterrupt):
+            raise error  # Ctrl-C or a container created before docker run fails
+        assert kw["timeout"] == 60
+        return subprocess.CompletedProcess(cmd, 0, stderr="")
+    with pytest.raises(type(error)) as caught:
         build_graph(pbf, graph, run=run)
+    assert caught.value is error
     assert calls[-1] == ["docker", "rm", "-f", container_name(BUILD_CONTAINER, graph)]
 
 
 def test_serving_always_stops_the_container(tmp_path):
     calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stderr="")
+
     with pytest.raises(RuntimeError):
-        with serving(tmp_path, 8002, run=lambda cmd, **kw: calls.append(cmd)) as url:
+        with serving(tmp_path, 8002, run=run) as url:
             assert url == "http://127.0.0.1:8002"
             raise RuntimeError("check crashed")
     assert calls[-1] == ["docker", "rm", "-f", container_name(CHECK_CONTAINER, tmp_path)]
@@ -99,16 +121,63 @@ def test_serving_removes_the_container_when_starting_it_fails(tmp_path):
         calls.append(cmd)
         if cmd[:2] == ["docker", "run"]:
             raise subprocess.CalledProcessError(125, cmd)  # e.g. the port is taken
+        return subprocess.CompletedProcess(cmd, 0, stderr="")
     with pytest.raises(subprocess.CalledProcessError):
         with serving(tmp_path, 8002, run=run):
             pass
     assert calls[-1] == ["docker", "rm", "-f", container_name(CHECK_CONTAINER, tmp_path)]
 
 
-def test_a_hanging_cleanup_does_not_hide_the_real_error(tmp_path):
+@pytest.mark.parametrize("failure", ["timeout", "oserror", "nonzero"])
+@pytest.mark.parametrize("original", [None, RuntimeError("check crashed"), KeyboardInterrupt()])
+def test_cleanup_failures_warn_without_changing_the_run_result(tmp_path, capsys, failure, original):
     def run(cmd, **kw):
         if cmd[:2] == ["docker", "rm"]:
-            raise subprocess.TimeoutExpired(cmd, kw["timeout"])
-    with pytest.raises(RuntimeError, match="check crashed"):
+            assert kw["timeout"] == 60 and kw["check"] is False
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+            if failure == "oserror":
+                raise OSError("Docker executable unavailable")
+            return subprocess.CompletedProcess(cmd, 1, stderr="Cannot connect to the Docker daemon")
+        return subprocess.CompletedProcess(cmd, 0, stderr="")
+
+    def check():
         with serving(tmp_path, 8002, run=run):
-            raise RuntimeError("check crashed")
+            if original is not None:
+                raise original
+
+    if original is None:
+        check()
+    else:
+        with pytest.raises(type(original)) as caught:
+            check()
+        assert caught.value is original
+    warning = capsys.readouterr().out
+    assert "warning: could not remove container" in warning
+    assert container_name(CHECK_CONTAINER, tmp_path) in warning
+
+
+def test_cleanup_is_quiet_when_docker_already_auto_removed_the_container(tmp_path, capsys):
+    def run(cmd, **kw):
+        if cmd[:2] == ["docker", "rm"]:
+            return subprocess.CompletedProcess(
+                cmd, 1, stderr=f"Error response from daemon: No such container: {cmd[-1]}\n")
+        return subprocess.CompletedProcess(cmd, 0, stderr="")
+
+    with serving(tmp_path, run=run):
+        pass
+    assert capsys.readouterr().out == ""
+
+
+def test_build_falls_back_when_the_extract_is_on_another_filesystem(tmp_path, monkeypatch):
+    pbf = tmp_path / "taiwan.osm.pbf"
+    pbf.write_bytes(b"pbf")
+    graph = tmp_path / "graph"
+    link = Mock(side_effect=OSError(errno.EXDEV, "cross-device link"))
+    copy = Mock()
+    monkeypatch.setattr(rbuild.os, "link", link)
+    monkeypatch.setattr(rbuild.shutil, "copyfile", copy)
+    build_graph(pbf, graph, run=_builder(graph, []))
+    link.assert_called_once_with(pbf, graph / pbf.name)
+    copy.assert_called_once_with(pbf, graph / pbf.name)
+    assert pbf.read_bytes() == b"pbf"
