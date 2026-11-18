@@ -2,11 +2,12 @@ name: update-search-data
 
 on:
   schedule:
-    - cron: "30 18 1 * *"  # UTC 每月 1 號 18:30 = 台灣時間 2 號 02:30（spec B §3.1）
+    - cron: "30 18 1 * *"  # UTC 每月 1 號 18:30 = 台灣時間 2 號 02:30（spec B §3.1；路線 spec C §3.1 同一個排程）
   workflow_dispatch:
 
 # Only this workflow publishes to R2, one run at a time: search/publish.py relies on it when it
-# checks that a build folder is empty before writing (plan Task 3).
+# checks that a build folder is empty before writing (plan B Task 3). The routing graph uses the
+# same rule under routing/.
 concurrency:
   group: update-search-data
   cancel-in-progress: false
@@ -16,7 +17,7 @@ jobs:
     # 用 R2 寫入金鑰，只在 main 上跑；這個 workflow 沒有 pull_request 觸發，fork 拿不到 secrets。
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 150
     services:
       meilisearch:
         # getmeili/meilisearch v1.54.0 社群版（多架構 index digest，授權查核 2026-10-14）
@@ -37,8 +38,14 @@ jobs:
           cache-dependency-path: requirements-search.txt
       # Pinned versions, hashes required, wheels only (scripts/lock-requirements.sh, README).
       - run: 'pip install --require-hashes --only-binary=:all: -r requirements-search.txt'
-      - run: pytest tests/search
-      - run: python -m search.main --workdir "$RUNNER_TEMP/search"
+      - run: pytest tests/search tests/routing
+      # One download of the Geofabrik extract for both builds (route C spec §3.1).
+      - id: pbf
+        run: python -m search.sources --pbf-out "$RUNNER_TEMP/osm/taiwan-latest.osm.pbf" --record "$RUNNER_TEMP/osm/pbf.json"
+      # Bounded so a stalled search still leaves the routing graph its time (〔計審 12〕).
+      - id: search
+        timeout-minutes: 100
+        run: python -m search.main --workdir "$RUNNER_TEMP/search" --pbf-file "$RUNNER_TEMP/osm/taiwan-latest.osm.pbf" --pbf-record "$RUNNER_TEMP/osm/pbf.json"
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -46,3 +53,21 @@ jobs:
           R2_BUCKET: stormrider-weather
           MEILI_URL: http://127.0.0.1:7700
           MEILI_MASTER_KEY: ci-probe-check-only-not-a-secret
+      # The routing graph runs whether or not the search step succeeded; either failing fails the run.
+      - if: ${{ !cancelled() && steps.pbf.outcome == 'success' }}
+        timeout-minutes: 2
+        env:
+          MEILI_CONTAINER_ID: ${{ job.services.meilisearch.id }}
+        run: |
+          # A failed/timed-out client may leave indexing active in the service container.
+          docker stop --time 10 "$MEILI_CONTAINER_ID"
+          rm -rf "$RUNNER_TEMP/search"
+          df -h "$RUNNER_TEMP"
+          free -m
+      - if: ${{ !cancelled() && steps.pbf.outcome == 'success' }}
+        run: python -m routing.main --workdir "$RUNNER_TEMP/routing" --pbf-file "$RUNNER_TEMP/osm/taiwan-latest.osm.pbf" --pbf-record "$RUNNER_TEMP/osm/pbf.json"
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: stormrider-weather

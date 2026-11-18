@@ -58,7 +58,8 @@ replace the SHA in both workflows and update the comment.
 `docs/superpowers/specs/2026-10-18-backend-b-search-design.md`).
 
 - Workflow: `.github/workflows/search-data.yml`, UTC 1st of each month 18:30, or run it by hand.
-- Inputs: GraphHopper's Photon dump for Taiwan and the Geofabrik Taiwan extract (md5-checked).
+- Inputs: GraphHopper's Photon dump for Taiwan and the Geofabrik Taiwan extract (md5-checked). In
+  the workflow the extract comes from the download step shared with the routing graph (below).
 - Output on R2 under `search/<buildId>/` (UTC time of the run; a published build is never
   overwritten): `places.ndjson.gz`, `nearby.ndjson.gz`, `probes.json`, `manifest.json`, `LICENSE.md`.
   `search/latest.json` points at the newest. Three builds are kept.
@@ -78,3 +79,45 @@ Local run (needs Docker for the probe check):
       getmeili/meilisearch@sha256:0bf32debcbfa8ba4e418679025f4935884972171513c92f0584689ff994a61df
     MEILI_MASTER_KEY=local-check-key-0001 .venv/bin/python -I -B scripts/build-search.py \
       --workdir .build/search --skip-publish
+
+## Routing graph (monthly)
+
+`routing/` builds the Valhalla routing graph for StormRider (route C spec, app repo
+`docs/superpowers/specs/2026-11-18-route-c-valhalla-design.md`).
+
+- Same workflow and schedule as the search data, from the same Geofabrik download
+  (`python -m search.sources` writes the extract and its md5-checked record once). The routing step
+  runs even when the search step fails or times out, provided the download succeeded and the job
+  has not been cancelled or reached its time limit; either failing fails the run. Meilisearch is
+  stopped before routing so unfinished indexing cannot compete with the graph build.
+- Built with Valhalla 3.9.1, `ghcr.io/valhalla/valhalla-scripted` pinned by digest in
+  `routing/build.py`; no network during the build; no administrative, time-zone or elevation data.
+- Before publishing to R2: six fixed check routes (`routing/checks.py`) must route in both modes within
+  their distance bands; every edge of a scooter route must have a known road class and none may be a
+  motorway; a Valhalla error or a malformed answer counts as a failed check. The tile tar must not
+  shrink by more than 15% (first build: at least 240 MB), and the extract must be at most 30 days old.
+- A run that fails after building keeps its `graph-<buildId>` folder for diagnosis; artifacts already
+  staged for publishing are in `out-<buildId>`. After success, graph removal is best effort: root-owned
+  directories may remain on Linux, with a warning (the hosted runner is discarded after the job).
+  Containers are named after the graph folder; Python errors and Ctrl-C attempt removal with a
+  60-second timeout. SIGTERM/SIGKILL or Docker failures can leave a container behind. On a local
+  machine, inspect `docker ps -a --filter name=sr-valhalla-` and remove the affected container with
+  `docker rm -f <container-name>`; an orphaned check service can still occupy port 8002.
+- Output on R2 under `routing/<buildId>/`: `tiles.tar`, `checks.json`, `manifest.json` (data date,
+  extract checksums, Valhalla image digest, hash of the generated build settings, file checksums,
+  check results), `LICENSE.md`.
+  `routing/latest.json` points at the newest. Six builds (about six months) are kept, so the server
+  can be pinned back that far (`ROUTING_PIN_BUILD`, server runbook §14).
+- The search step has a 100-minute limit within the 150-minute job budget; setup and download also
+  use that budget, so this does not guarantee a full 50 minutes for routing.
+- Data © OpenStreetMap contributors, ODbL 1.0. `tiles.tar` is the derived database (ODbL §4.6); this
+  repo is how it was made: the image digest, the build settings in `routing/build.py` and the checks.
+- The server's routing speeds are set in `stormrider-server`; the scooter cap here (60 km/h) is only
+  used by the checks.
+
+Local run (needs Docker and the dependencies in `requirements-search.txt`). Local publishing checks
+routes and the 240 MB floor, but does not enforce the 30-day age limit or compare with the last R2 build:
+
+    .venv/bin/python -I -B scripts/fetch-pbf.py --pbf-out .build/osm/taiwan-latest.osm.pbf --record .build/osm/pbf.json
+    .venv/bin/python -I -B scripts/build-routing.py --workdir .build/routing \
+      --pbf-file .build/osm/taiwan-latest.osm.pbf --pbf-record .build/osm/pbf.json --local-publish .build/site
