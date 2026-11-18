@@ -1,9 +1,15 @@
-"""Download the monthly inputs and check them against the publisher's md5 (backend B spec §3.2)."""
+"""Download the monthly inputs and check them against the publisher's md5 (backend B spec §3.2).
+
+`main` downloads the Geofabrik extract once for both monthly builds, search and routing (route C
+spec §3.1); run it with scripts/fetch-pbf.py locally, or as the module search.sources in the workflow."""
 from __future__ import annotations
 
+import argparse
 import hashlib
+import json
 import re
 import time
+from pathlib import Path
 
 import requests
 
@@ -65,3 +71,41 @@ def _download_once(url: str, dest, s, timeout: int) -> dict:
     if md5.hexdigest() != expected:
         raise ChecksumError(f"md5 mismatch for {url}")
     return {"url": url, "sha256": sha.hexdigest(), "md5": md5.hexdigest(), "bytes": size}
+
+
+def load_pbf_record(record_path, pbf_path) -> dict:
+    """The download record `main` wrote, checked against the file it describes: the manifests keep
+    the publisher's URL and md5, so a record for some other file must not stand in for it."""
+    try:
+        record = json.loads(Path(record_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise ChecksumError(f"unreadable download record {record_path}") from e
+    if (not isinstance(record, dict) or record.get("url") != GEOFABRIK_URL
+            or not re.fullmatch(r"[0-9a-f]{64}", str(record.get("sha256", "")))
+            or not re.fullmatch(r"[0-9a-f]{32}", str(record.get("md5", "")))
+            or type(record.get("bytes")) is not int):
+        raise ChecksumError(f"invalid download record {record_path}")
+    sha = hashlib.sha256()
+    with open(pbf_path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            sha.update(chunk)
+    if sha.hexdigest() != record["sha256"]:
+        raise ChecksumError(f"{pbf_path} does not match its download record")
+    return {k: record[k] for k in ("url", "sha256", "md5", "bytes")}
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(description="Download the Geofabrik Taiwan extract once for the monthly builds")
+    p.add_argument("--pbf-out", required=True)
+    p.add_argument("--record", required=True)
+    args = p.parse_args(argv)
+    out = Path(args.pbf_out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    record = download(GEOFABRIK_URL, out, attempts=DOWNLOAD_ATTEMPTS)
+    Path(args.record).write_text(json.dumps(record), encoding="utf-8")
+    print(json.dumps(record))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

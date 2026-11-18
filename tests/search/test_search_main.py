@@ -1,4 +1,5 @@
 import gzip
+import hashlib
 import json
 import re
 from datetime import datetime, timezone
@@ -15,6 +16,7 @@ import search.meili
 from search.checks import CheckFailed
 from search.main import build_outputs, local_publish, photon_timestamp
 from search.meili import Meili, MeiliError
+from search.sources import GEOFABRIK_URL, PHOTON_URL
 
 OSM_XML = """<?xml version='1.0' encoding='UTF-8'?>
 <osm version="0.6" generator="test">
@@ -120,6 +122,30 @@ def test_main_refuses_to_publish_outside_the_workflow(main_run, monkeypatch):
     main_run.download.assert_not_called()
     main_run.make_client.assert_not_called()
     main_run.publish.assert_not_called()
+
+
+def test_publishing_a_local_extract_needs_its_download_record(main_run, tmp_path):
+    # The manifest keeps the publisher's URL and md5 of the extract (spec B §3.2, route C §3.1).
+    pbf = tmp_path / "taiwan-latest.osm.pbf"
+    pbf.write_bytes(b"pbf")
+    with pytest.raises(SystemExit, match="needs --pbf-record"):
+        search.main.main(main_run.argv + ["--pbf-file", str(pbf)])
+    main_run.download.assert_not_called()
+    main_run.publish.assert_not_called()
+
+
+def test_a_shared_extract_keeps_the_publisher_url_and_md5_in_the_manifest(main_run, tmp_path):
+    pbf = tmp_path / "taiwan-latest.osm.pbf"
+    pbf.write_bytes(b"pbf")
+    record = {"url": GEOFABRIK_URL, "sha256": hashlib.sha256(b"pbf").hexdigest(),
+              "md5": hashlib.md5(b"pbf").hexdigest(), "bytes": 3}
+    rec = tmp_path / "pbf.json"
+    rec.write_text(json.dumps(record), encoding="utf-8")
+    assert search.main.main(main_run.argv + ["--pbf-file", str(pbf), "--pbf-record", str(rec)]) == 0
+    # Only Photon is downloaded here; the extract came from the shared download step.
+    assert [c.args[0] for c in main_run.download.call_args_list] == [PHOTON_URL]
+    geofabrik = main_run.publish.call_args.args[4]["sources"]["geofabrik"]
+    assert {k: geofabrik[k] for k in record} == record
 
 
 def test_local_runs_need_no_workflow(main_run, monkeypatch):

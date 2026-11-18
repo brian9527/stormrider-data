@@ -1,10 +1,12 @@
 import hashlib
+import json
 
 import pytest
 
 requests = pytest.importorskip("requests")
 
-from search.sources import ChecksumError, download
+from search import sources
+from search.sources import GEOFABRIK_URL, ChecksumError, download, load_pbf_record
 
 
 class FakeResponse:
@@ -175,3 +177,54 @@ def test_download_gives_up_after_the_last_attempt(tmp_path):
     with pytest.raises(requests.Timeout):
         download("https://x/a", tmp_path / "a", session=session, attempts=3, sleep=waits.append)
     assert len(session.calls) == 3 and waits == [60, 300]
+
+
+def _record_for(path, **override):
+    data = path.read_bytes()
+    record = {"url": GEOFABRIK_URL, "sha256": hashlib.sha256(data).hexdigest(),
+              "md5": hashlib.md5(data).hexdigest(), "bytes": len(data)}
+    record.update(override)
+    return record
+
+
+def test_load_pbf_record_accepts_a_matching_record(tmp_path):
+    pbf = tmp_path / "taiwan-latest.osm.pbf"
+    pbf.write_bytes(b"pbf bytes")
+    rec = tmp_path / "pbf.json"
+    rec.write_text(json.dumps(_record_for(pbf)), encoding="utf-8")
+    assert load_pbf_record(rec, pbf) == _record_for(pbf)
+
+
+@pytest.mark.parametrize("override", [{"url": "https://example.com/x.pbf"}, {"sha256": "0" * 64},
+                                      {"md5": "nope"}, {"bytes": "9"}])
+def test_load_pbf_record_refuses_a_wrong_record(tmp_path, override):
+    pbf = tmp_path / "taiwan-latest.osm.pbf"
+    pbf.write_bytes(b"pbf bytes")
+    rec = tmp_path / "pbf.json"
+    rec.write_text(json.dumps(_record_for(pbf, **override)), encoding="utf-8")
+    with pytest.raises(ChecksumError):
+        load_pbf_record(rec, pbf)
+
+
+def test_load_pbf_record_refuses_unreadable_json(tmp_path):
+    pbf = tmp_path / "x.pbf"
+    pbf.write_bytes(b"x")
+    rec = tmp_path / "pbf.json"
+    rec.write_text("{", encoding="utf-8")
+    with pytest.raises(ChecksumError):
+        load_pbf_record(rec, pbf)
+
+
+def test_cli_downloads_once_and_writes_the_record(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_download(url, dest, attempts=1, **_):
+        calls.append((url, attempts))
+        dest.write_bytes(b"pbf")
+        return {"url": url, "sha256": "a" * 64, "md5": "b" * 32, "bytes": 3}
+
+    monkeypatch.setattr(sources, "download", fake_download)
+    out, rec = tmp_path / "osm" / "taiwan.pbf", tmp_path / "osm" / "pbf.json"
+    assert sources.main(["--pbf-out", str(out), "--record", str(rec)]) == 0
+    assert calls == [(GEOFABRIK_URL, sources.DOWNLOAD_ATTEMPTS)]
+    assert json.loads(rec.read_text(encoding="utf-8"))["bytes"] == 3

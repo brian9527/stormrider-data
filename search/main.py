@@ -18,7 +18,7 @@ from search.meili import PLACES_SETTINGS, Meili
 from search.nearby import extract_nearby, pbf_timestamp
 from search.places import PlaceStats, build_documents, iter_dump_records, sha256_file, write_ndjson_gz
 from search.publish import LATEST_KEY, LICENSE_MD, build_prefix, latest_document, previous_counts, publish
-from search.sources import DOWNLOAD_ATTEMPTS, GEOFABRIK_URL, PHOTON_URL, download
+from search.sources import DOWNLOAD_ATTEMPTS, GEOFABRIK_URL, PHOTON_URL, download, load_pbf_record
 
 CHECK_INDEX = "check_places"
 
@@ -114,6 +114,7 @@ def parse_args(argv=None):
     p.add_argument("--workdir", required=True)
     p.add_argument("--photon-file", help="use a local Photon dump instead of downloading")
     p.add_argument("--pbf-file", help="use a local Geofabrik extract instead of downloading")
+    p.add_argument("--pbf-record", help="download record of --pbf-file, written by scripts/fetch-pbf.py")
     p.add_argument("--no-road-merge", action="store_true", help="evaluation only (plan Task 11)")
     p.add_argument("--keep-excluded", action="store_true", help="evaluation only (plan Task 11)")
     p.add_argument("--skip-probes", action="store_true", help="local runs without Meilisearch")
@@ -132,6 +133,9 @@ def main(argv=None) -> int:
     if publishing and os.environ.get("GITHUB_ACTIONS") != "true":
         raise SystemExit("publishing to R2 runs only in the search-data workflow; "
                          "use --skip-publish or --local-publish")
+    if publishing and args.pbf_file and not args.pbf_record:
+        # The manifest keeps the publisher's URL and md5 of the extract (spec B §3.2).
+        raise SystemExit("publishing with --pbf-file needs --pbf-record")
     now = datetime.now(timezone.utc)
     build_id = now.strftime("%Y%m%dT%H%M%SZ")
     built_at = now.isoformat(timespec="seconds")
@@ -145,7 +149,9 @@ def main(argv=None) -> int:
         sources["photon"] = download(PHOTON_URL, photon, attempts=DOWNLOAD_ATTEMPTS)
     if args.pbf_file:
         pbf = Path(args.pbf_file)
-        sources["geofabrik"] = {"url": None, "sha256": sha256_file(pbf)}
+        # The workflow downloads the extract once for search and routing (route C spec §3.1).
+        sources["geofabrik"] = (load_pbf_record(args.pbf_record, pbf) if args.pbf_record
+                                else {"url": None, "sha256": sha256_file(pbf)})
     else:
         pbf = workdir / "taiwan-latest.osm.pbf"
         sources["geofabrik"] = download(GEOFABRIK_URL, pbf, attempts=DOWNLOAD_ATTEMPTS)
