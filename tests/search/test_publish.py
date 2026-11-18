@@ -3,6 +3,7 @@ import json
 import pytest
 
 from search.publish import LATEST_KEY, AlreadyPublished, previous_counts, prune, publish
+from routing.publish import previous_tiles_bytes, publish_routing
 
 
 class FakeS3:
@@ -186,3 +187,71 @@ def test_publish_keeps_the_build_it_replaced_even_behind_unpublished_complete_bu
     assert f"search/{a}/manifest.json" not in s3.objects
     assert f"search/{b}/manifest.json" not in s3.objects
     assert all(f"search/{x}/manifest.json" in s3.objects for x in (c, d, e))
+
+
+def test_publish_and_prune_work_under_another_root(tmp_path):
+    s3 = FakeS3()
+    f = tmp_path / "tiles.tar"
+    f.write_bytes(b"tar")
+    manifest = {"buildId": "20261101T183000Z", "dataDate": "2026-10-31"}
+    publish(s3, "bucket", "20261101T183000Z", {"tiles": f}, manifest,
+            root="routing/", latest_key="routing/latest.json", license_md="# routing\n")
+    assert s3.objects["routing/20261101T183000Z/tiles.tar"]["type"] == "application/x-tar"
+    assert s3.objects["routing/20261101T183000Z/LICENSE.md"]["body"] == b"# routing\n"
+    latest = json.loads(s3.objects["routing/latest.json"]["body"])
+    assert latest["manifest"] == "routing/20261101T183000Z/manifest.json"
+    assert not any(k.startswith("search/") for k in s3.objects)
+
+
+def test_publish_keeps_the_number_of_builds_it_is_given(tmp_path):
+    s3 = FakeS3()
+    f = tmp_path / "tiles.tar"
+    f.write_bytes(b"tar")
+    for build in ("20261101T183000Z", "20261201T183000Z", "20270101T183000Z"):
+        publish(s3, "bucket", build, {"tiles": f}, {"buildId": build, "dataDate": "2026-10-31"},
+                root="routing/", latest_key="routing/latest.json", license_md="x", keep=2)
+    folders = {k.split("/")[1] for k in s3.objects if k.startswith("routing/2")}
+    # keep=2 plus the build latest.json named before the last publish
+    assert folders == {"20261201T183000Z", "20270101T183000Z"}
+
+
+def test_routing_wrapper_keeps_six_builds_without_touching_search(tmp_path):
+    s3 = FakeS3()
+    search_objects = {"search/latest.json": {"body": b'{"buildId":"20260101T183000Z"}'},
+                      "search/20260101T183000Z/manifest.json": {"body": b"{}"}}
+    s3.objects.update(search_objects)
+    tiles = tmp_path / "tiles.tar"
+    tiles.write_bytes(b"tar")
+    assert previous_tiles_bytes(s3, "bucket") is None
+    for month in range(1, 8):
+        build = f"2026{month:02d}01T183000Z"
+        manifest = {"buildId": build, "dataDate": f"2026-{month:02d}-01",
+                    "files": {"tiles": {"bytes": 3}}}
+        publish_routing(s3, "bucket", build, {"tiles": tiles}, manifest)
+    assert {k.split("/")[1] for k in s3.objects if k.startswith("routing/2")} == {
+        f"2026{month:02d}01T183000Z" for month in range(2, 8)}
+    assert {key: s3.objects[key] for key in search_objects} == search_objects
+    assert previous_tiles_bytes(s3, "bucket") == 3
+    assert s3.objects["routing/20260701T183000Z/LICENSE.md"]["body"].startswith(b"# StormRider routing graph")
+
+
+@pytest.mark.parametrize("failed_name", ["tiles.tar", "checks.json", "manifest.json", "latest.json"])
+def test_routing_upload_failure_preserves_the_previous_pointer(tmp_path, failed_name):
+    class FailingS3(FakeS3):
+        def put_object(self, **kw):
+            if kw["Key"].rsplit("/", 1)[-1] == failed_name:
+                raise OSError("upload failed")
+            super().put_object(**kw)
+
+    s3 = FailingS3()
+    previous = {"body": b'{"buildId":"20261001T183000Z"}'}
+    s3.objects["routing/latest.json"] = previous.copy()
+    files = {}
+    for name in ("tiles.tar", "checks.json"):
+        path = tmp_path / name
+        path.write_bytes(b"fixture")
+        files[name] = path
+    with pytest.raises(OSError, match="upload failed"):
+        publish_routing(s3, "bucket", MANIFEST["buildId"], files, MANIFEST)
+    assert s3.objects["routing/latest.json"] == previous
+    assert s3.deleted == []
