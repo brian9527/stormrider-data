@@ -16,7 +16,7 @@ import search.meili
 from search.checks import CheckFailed
 from search.main import build_outputs, local_publish, photon_timestamp
 from search.meili import Meili, MeiliError
-from search.sources import GEOFABRIK_URL, PHOTON_URL
+from search.sources import GEOFABRIK_URL, PHOTON_URL, ChecksumError
 
 OSM_XML = """<?xml version='1.0' encoding='UTF-8'?>
 <osm version="0.6" generator="test">
@@ -146,6 +146,20 @@ def test_a_shared_extract_keeps_the_publisher_url_and_md5_in_the_manifest(main_r
     assert [c.args[0] for c in main_run.download.call_args_list] == [PHOTON_URL]
     geofabrik = main_run.publish.call_args.args[4]["sources"]["geofabrik"]
     assert {k: geofabrik[k] for k in record} == record
+
+
+@pytest.mark.parametrize("override", [{"md5": "0" * 32}, {"url": "https://example.com/taiwan.pbf"}, {"bytes": 4}])
+def test_invalid_shared_extract_record_never_reaches_build_or_publish(main_run, tmp_path, override):
+    pbf, rec = tmp_path / "taiwan.pbf", tmp_path / "pbf.json"
+    pbf.write_bytes(b"pbf")
+    record = {"url": GEOFABRIK_URL, "sha256": hashlib.sha256(b"pbf").hexdigest(),
+              "md5": hashlib.md5(b"pbf").hexdigest(), "bytes": 3, **override}
+    rec.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(ChecksumError):
+        search.main.main(main_run.argv + ["--pbf-file", str(pbf), "--pbf-record", str(rec)])
+    main_run.build_outputs.assert_not_called()
+    main_run.make_client.assert_not_called()
+    main_run.publish.assert_not_called()
 
 
 def test_local_runs_need_no_workflow(main_run, monkeypatch):

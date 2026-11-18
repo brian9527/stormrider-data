@@ -196,7 +196,9 @@ def test_load_pbf_record_accepts_a_matching_record(tmp_path):
 
 
 @pytest.mark.parametrize("override", [{"url": "https://example.com/x.pbf"}, {"sha256": "0" * 64},
-                                      {"md5": "nope"}, {"bytes": "9"}])
+                                      {"md5": "nope"}, {"bytes": "9"}, {"md5": "0" * 32},
+                                      {"bytes": 8}, {"bytes": -1}, {"bytes": True},
+                                      {"md5": 10 ** 31}, {"sha256": 10 ** 63}])
 def test_load_pbf_record_refuses_a_wrong_record(tmp_path, override):
     pbf = tmp_path / "taiwan-latest.osm.pbf"
     pbf.write_bytes(b"pbf bytes")
@@ -213,6 +215,30 @@ def test_load_pbf_record_refuses_unreadable_json(tmp_path):
     rec.write_text("{", encoding="utf-8")
     with pytest.raises(ChecksumError):
         load_pbf_record(rec, pbf)
+
+
+@pytest.mark.parametrize("record", [None, [], "record", 42, {}, {"url": GEOFABRIK_URL}])
+def test_load_pbf_record_refuses_non_records(tmp_path, record):
+    rec = tmp_path / "pbf.json"
+    rec.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(ChecksumError, match="invalid download record"):
+        load_pbf_record(rec, tmp_path / "not-needed.pbf")
+
+
+def test_load_pbf_record_rejects_changed_bytes_with_the_same_size(tmp_path):
+    pbf, rec = tmp_path / "taiwan.pbf", tmp_path / "pbf.json"
+    pbf.write_bytes(b"old pbf")
+    rec.write_text(json.dumps(_record_for(pbf)), encoding="utf-8")
+    pbf.write_bytes(b"new pbf")
+    with pytest.raises(ChecksumError, match="does not match"):
+        load_pbf_record(rec, pbf)
+
+
+def test_load_pbf_record_drops_unverified_extra_fields(tmp_path):
+    pbf, rec = tmp_path / "taiwan.pbf", tmp_path / "pbf.json"
+    pbf.write_bytes(b"pbf")
+    rec.write_text(json.dumps(_record_for(pbf, timestamp="2099-01-01")), encoding="utf-8")
+    assert load_pbf_record(rec, pbf) == _record_for(pbf)
 
 
 def test_cli_downloads_once_and_writes_the_record(tmp_path, monkeypatch):

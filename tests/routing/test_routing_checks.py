@@ -2,7 +2,7 @@ import pytest
 
 from routing.checks import (CHECK_ROUTES, TILES_FLOOR_BYTES, CheckFailed, check_route, check_tiles_size,
                             checks_document, run_checks)
-from routing.valhalla import NoRoute
+from routing.valhalla import NoRoute, ValhallaError
 
 CHECK = {"name": "A→B", "from": [22.6, 120.3], "to": [22.9, 120.5], "km": [30.5, 59.8]}
 
@@ -81,3 +81,44 @@ def test_tiles_size_floor_and_drop():
     check_tiles_size(850, 1000)
     with pytest.raises(CheckFailed):
         check_tiles_size(849, 1000)
+
+
+@pytest.mark.parametrize("km,passes", [(30.5, True), (59.8, True), (30.499, False), (59.801, False)])
+def test_distance_band_boundaries(km, passes):
+    problems, _ = check_route(FakeClient(km=km), CHECK, "car")
+    assert (not problems) == passes
+
+
+@pytest.mark.parametrize("stage", ["route", "road_classes"])
+@pytest.mark.parametrize("error", [NoRoute("442"), ValhallaError("unavailable")])
+def test_run_checks_records_failures_and_continues(stage, error):
+    class FailingClient(FakeClient):
+        def route(self, origin, destination, mode):
+            if stage == "route" and mode == "scooter":
+                raise error
+            return super().route(origin, destination, mode)
+
+        def road_classes(self, shape, mode):
+            if stage == "road_classes":
+                raise error
+            return super().road_classes(shape, mode)
+
+    problems, report = run_checks(FailingClient(), [CHECK, {**CHECK, "name": "C→D"}])
+    assert len(problems) == 2
+    assert "A→B (scooter)" in problems[0] and "C→D (scooter)" in problems[1]
+    assert len(report) == 4
+    assert report[1]["km"] == report[3]["km"] == 44.0
+    if stage == "road_classes":
+        assert all("road class lookup failed" in p for p in problems)
+        assert report[0]["km"] == 44.0
+        assert "motorwayEdges" not in report[0]  # unverified is not zero motorways
+
+
+def test_trace_failure_does_not_hide_a_distance_failure():
+    class Untraceable(FakeClient):
+        def road_classes(self, shape, mode):
+            raise ValhallaError("443")
+
+    problems, _ = check_route(Untraceable(km=80), CHECK, "scooter")
+    assert len(problems) == 2
+    assert "outside" in problems[0] and "road class lookup failed" in problems[1]

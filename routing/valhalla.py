@@ -1,6 +1,7 @@
 """A small Valhalla HTTP client for the graph checks (route C spec §3.3)."""
 from __future__ import annotations
 
+import math
 import time
 
 import requests
@@ -44,14 +45,20 @@ class ValhallaClient:
             sleep(2)
 
     def _post(self, action: str, body: dict) -> dict:
-        r = self.s.post(f"{self.base}/{action}", json=body, timeout=self.timeout)
-        if r.status_code == 200:
-            return r.json()
         try:
-            code = r.json().get("error_code")
-        except ValueError:
-            code = None
-        if r.status_code == 400 and code in NO_ROUTE_CODES:
+            r = self.s.post(f"{self.base}/{action}", json=body, timeout=self.timeout)
+        except requests.RequestException as e:
+            raise ValhallaError(f"{action} request failed ({type(e).__name__})") from e
+        try:
+            data = r.json()
+        except ValueError as e:
+            raise ValhallaError(f"{action} answered {r.status_code} with invalid JSON") from e
+        if not isinstance(data, dict):
+            raise ValhallaError(f"{action} answered {r.status_code} with a non-object response")
+        if r.status_code == 200:
+            return data
+        code = data.get("error_code")
+        if r.status_code == 400 and type(code) is int and code in NO_ROUTE_CODES:
             raise NoRoute(str(code))
         raise ValhallaError(f"{action} answered {r.status_code} (error_code {code})")
 
@@ -64,12 +71,24 @@ class ValhallaClient:
             "directions_type": "none",
             "units": "kilometers",
         })
-        trip = data["trip"]
-        return {"km": float(trip["summary"]["length"]), "seconds": float(trip["summary"]["time"]),
-                "shape": trip["legs"][0]["shape"]}
+        try:
+            trip = data["trip"]
+            km, seconds = trip["summary"]["length"], trip["summary"]["time"]
+            legs = trip["legs"]
+            # These checks use two distinct endpoints, so there must be exactly one nonempty leg.
+            if not isinstance(legs, list) or len(legs) != 1:
+                raise ValueError("expected one leg")
+            shape = legs[0]["shape"]
+            if not isinstance(shape, str) or not shape:
+                raise ValueError("missing shape")
+            if any(type(n) not in (int, float) or not math.isfinite(n) or n <= 0 for n in (km, seconds)):
+                raise ValueError("invalid distance or duration")
+        except (KeyError, TypeError, ValueError, OverflowError) as e:
+            raise ValhallaError("route returned a malformed trip") from e
+        return {"km": float(km), "seconds": float(seconds), "shape": shape}
 
-    def road_classes(self, shape: str, mode: str) -> list[str]:
-        """The road class of every edge the route uses; edge_walk is exact for a shape Valhalla returned."""
+    def road_classes(self, shape: str, mode: str) -> list[str | None]:
+        """Walk the original route shape on the same graph; a failed match must fail the check."""
         costing, options = COSTING[mode]
         data = self._post("trace_attributes", {
             "encoded_polyline": shape,
@@ -78,4 +97,10 @@ class ValhallaClient:
             "costing_options": options,
             "filters": {"attributes": ["edge.road_class"], "action": "include"},
         })
-        return [e.get("road_class") for e in data.get("edges", [])]
+        edges = data.get("edges", [])
+        if not isinstance(edges, list) or any(not isinstance(e, dict) for e in edges):
+            raise ValhallaError("trace_attributes returned malformed edges")
+        classes = [e.get("road_class") for e in edges]
+        if any(c is not None and not isinstance(c, str) for c in classes):
+            raise ValhallaError("trace_attributes returned a malformed road class")
+        return classes

@@ -81,15 +81,20 @@ def load_pbf_record(record_path, pbf_path) -> dict:
     except (OSError, ValueError) as e:
         raise ChecksumError(f"unreadable download record {record_path}") from e
     if (not isinstance(record, dict) or record.get("url") != GEOFABRIK_URL
-            or not re.fullmatch(r"[0-9a-f]{64}", str(record.get("sha256", "")))
-            or not re.fullmatch(r"[0-9a-f]{32}", str(record.get("md5", "")))
+            or not isinstance(record.get("sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", record["sha256"])
+            or not isinstance(record.get("md5"), str)
+            or not re.fullmatch(r"[0-9a-f]{32}", record["md5"])
             or type(record.get("bytes")) is not int):
         raise ChecksumError(f"invalid download record {record_path}")
-    sha = hashlib.sha256()
+    sha, md5, size = hashlib.sha256(), hashlib.md5(), 0
     with open(pbf_path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             sha.update(chunk)
-    if sha.hexdigest() != record["sha256"]:
+            md5.update(chunk)
+            size += len(chunk)
+    if (sha.hexdigest() != record["sha256"] or md5.hexdigest() != record["md5"]
+            or size != record["bytes"]):
         raise ChecksumError(f"{pbf_path} does not match its download record")
     return {k: record[k] for k in ("url", "sha256", "md5", "bytes")}
 

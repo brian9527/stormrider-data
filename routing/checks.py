@@ -2,7 +2,7 @@
 same routes from the published checks.json."""
 from __future__ import annotations
 
-from routing.valhalla import SCOOTER_TOP_SPEED_KPH, NoRoute
+from routing.valhalla import SCOOTER_TOP_SPEED_KPH, NoRoute, ValhallaError
 
 # Endpoints of the 2026-10-09 local test (app repo research/2026-10-08-osm-routing-and-search/
 # results/endpoints.json). Bands: 0.7 × the shorter and 1.35 × the longer of the scooter and car
@@ -40,13 +40,19 @@ def check_route(client, check: dict, mode: str) -> tuple[list[str], dict]:
         trip = client.route(check["from"], check["to"], mode)
     except NoRoute as e:
         return [f"{check['name']} ({mode}): no route ({e})"], {}
+    except ValhallaError as e:
+        return [f"{check['name']} ({mode}): route failed ({e})"], {}
     problems = []
     lo, hi = check["km"]
     if not lo <= trip["km"] <= hi:
         problems.append(f"{check['name']} ({mode}): {trip['km']:.1f} km outside {lo}–{hi}")
     measured = {"km": round(trip["km"], 3), "minutes": round(trip["seconds"] / 60, 1)}
     if mode == "scooter":
-        classes = client.road_classes(trip["shape"], mode)
+        try:
+            classes = client.road_classes(trip["shape"], mode)
+        except (NoRoute, ValhallaError) as e:
+            problems.append(f"{check['name']} ({mode}): road class lookup failed ({e})")
+            return problems, measured
         measured["motorwayEdges"] = sum(1 for c in classes if c == "motorway")
         unknown = sum(1 for c in classes if c not in KNOWN_ROAD_CLASSES)
         if not classes:
