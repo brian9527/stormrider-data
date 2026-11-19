@@ -5,6 +5,10 @@ from unittest.mock import Mock
 
 import pytest
 
+# routing.main reads the PBF timestamp through search.nearby, which needs osmium. The weather workflow
+# installs only requirements.txt and runs every test, so skip here like tests/search does.
+pytest.importorskip("osmium")
+
 import routing.checks
 import routing.main as rmain
 from routing.checks import CheckFailed
