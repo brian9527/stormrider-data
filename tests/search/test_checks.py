@@ -67,6 +67,14 @@ def test_exact_ten_percent_drop_is_allowed():
     check_counts(90_000, 9_000, {"places": 100_000, "nearby": 10_000})
 
 
+def test_future_sources_stop_publishing_beyond_one_day_of_lead():
+    check_source_fresh("2026-11-02", "2026-11-01T18:30:00Z")  # a time written ahead of UTC
+    with pytest.raises(CheckFailed, match="2 days after the build"):
+        check_source_fresh("2026-11-03", "2026-11-01T18:30:00Z")
+    with pytest.raises(CheckFailed, match="after the build"):
+        check_source_fresh("2099-01-01", "2026-11-01T18:30:00Z")
+
+
 def test_source_age_boundary_is_thirty_days():
     check_source_fresh("2026-10-02", "2026-11-01T18:30:00Z")
     with pytest.raises(CheckFailed, match="31 days old"):

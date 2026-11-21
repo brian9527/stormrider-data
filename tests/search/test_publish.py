@@ -3,6 +3,7 @@ import json
 import pytest
 
 from search.publish import LATEST_KEY, AlreadyPublished, previous_counts, prune, publish
+from routing.checks import CheckFailed
 from routing.publish import previous_tiles_bytes, publish_routing
 
 
@@ -233,6 +234,33 @@ def test_routing_wrapper_keeps_six_builds_without_touching_search(tmp_path):
     assert {key: s3.objects[key] for key in search_objects} == search_objects
     assert previous_tiles_bytes(s3, "bucket") == 3
     assert s3.objects["routing/20260701T183000Z/LICENSE.md"]["body"].startswith(b"# StormRider routing graph")
+
+
+@pytest.mark.parametrize("manifest", [
+    None,  # latest.json points at a manifest that is gone
+    b"[]",
+    b'{"files": {}}',
+    b'{"files": {"tiles": {}}}',
+    b'{"files": {"tiles": {"bytes": true}}}',
+    b'{"files": {"tiles": {"bytes": "240000000"}}}',
+    b'{"files": {"tiles": {"bytes": 0}}}',
+    b'{"files": {"tiles": {"bytes": -1}}}',
+    b'{"files": {"tiles": {"bytes": 1.5}}}',
+])
+def test_an_unreadable_published_size_stops_the_publish_instead_of_skipping_the_shrink_check(manifest):
+    s3 = FakeS3()
+    s3.objects["routing/latest.json"] = {"body": b'{"buildId": "20261101T183000Z", "manifest": "routing/20261101T183000Z/manifest.json"}'}
+    if manifest is not None:
+        s3.objects["routing/20261101T183000Z/manifest.json"] = {"body": manifest}
+    with pytest.raises(CheckFailed, match="cannot be read"):
+        previous_tiles_bytes(s3, "bucket")
+
+
+def test_a_latest_pointer_without_a_manifest_key_stops_the_publish():
+    s3 = FakeS3()
+    s3.objects["routing/latest.json"] = {"body": b'{"buildId": "20261101T183000Z"}'}
+    with pytest.raises(CheckFailed, match="cannot be read"):
+        previous_tiles_bytes(s3, "bucket")
 
 
 @pytest.mark.parametrize("failed_name", ["tiles.tar", "checks.json", "manifest.json", "latest.json"])

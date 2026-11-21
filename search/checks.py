@@ -54,6 +54,11 @@ def source_date(*timestamps) -> str | None:
     return min(dates).isoformat()
 
 
+# A data time after the build is a clock or source error, and would pass any age limit. Times are
+# read in their own zone, so a day of lead allows one written ahead of UTC (〔資料總審 2〕).
+MAX_SOURCE_LEAD_DAYS = 1
+
+
 def check_source_fresh(data_date: str | None, built_at: str, max_age_days: int = MAX_SOURCE_AGE_DAYS) -> None:
     built = _as_date(built_at)
     if data_date is None or built is None:
@@ -61,6 +66,8 @@ def check_source_fresh(data_date: str | None, built_at: str, max_age_days: int =
     age = (built - date.fromisoformat(data_date)).days
     if age > max_age_days:
         raise CheckFailed(f"the inputs are {age} days old")
+    if age < -MAX_SOURCE_LEAD_DAYS:
+        raise CheckFailed(f"the inputs are dated {-age} days after the build")
 
 
 def check_counts(places: int, nearby: int, previous: dict | None) -> None:

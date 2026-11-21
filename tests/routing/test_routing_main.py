@@ -159,7 +159,7 @@ def test_r2_publish_keeps_verified_source_and_artifact_hashes(r2_run, tmp_path):
     assert not list((tmp_path / "w").glob("graph-*"))
 
 
-@pytest.mark.parametrize("reason", ["checks", "unknown_date", "stale", "size_drop"])
+@pytest.mark.parametrize("reason", ["checks", "unknown_date", "stale", "future", "size_drop"])
 def test_r2_publish_is_blocked_by_every_graph_gate(r2_run, monkeypatch, tmp_path, reason):
     run = r2_run
     if reason == "checks":
@@ -168,6 +168,8 @@ def test_r2_publish_is_blocked_by_every_graph_gate(r2_run, monkeypatch, tmp_path
         monkeypatch.setattr(rmain, "pbf_timestamp", lambda _: None)
     elif reason == "stale":
         monkeypatch.setattr(rmain, "pbf_timestamp", lambda _: "2026-10-01T00:00:00Z")
+    elif reason == "future":
+        monkeypatch.setattr(rmain, "pbf_timestamp", lambda _: "2099-01-01T00:00:00Z")
     else:
         # Above the first-build floor, but more than 15% smaller than the previous graph.
         run["previous"].return_value = 6_000

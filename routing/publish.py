@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pipeline import r2
+from routing.checks import CheckFailed
 from search.publish import build_prefix as _build_prefix
 from search.publish import publish
 
@@ -41,11 +42,18 @@ def publish_routing(client, bucket: str, build_id: str, files: dict, manifest: d
 
 
 def previous_tiles_bytes(client, bucket: str) -> int | None:
+    """The published graph's tiles.tar size, for the shrink check. None only when no routing build
+    is published yet: a published one whose size cannot be read stops the publish, because taking it
+    for a first build would skip that check (〔資料總審 1〕)."""
     latest = r2.get_json(client, bucket, LATEST_KEY)
-    if not latest:
+    if latest is None:
         return None
-    manifest = r2.get_json(client, bucket, latest["manifest"])
-    try:
-        return int(manifest["files"]["tiles"]["bytes"])
-    except (TypeError, KeyError, ValueError):
-        return None
+    key = latest.get("manifest") if isinstance(latest, dict) else None
+    manifest = r2.get_json(client, bucket, key) if isinstance(key, str) else None
+    files = manifest.get("files") if isinstance(manifest, dict) else None
+    tiles = files.get("tiles") if isinstance(files, dict) else None
+    size = tiles.get("bytes") if isinstance(tiles, dict) else None
+    # A bool is an int in Python, and zero or less would remove the lower bound.
+    if type(size) is not int or size <= 0:
+        raise CheckFailed("the size of the published tiles.tar cannot be read")
+    return size

@@ -64,7 +64,8 @@ replace the SHA in both workflows and update the comment.
   overwritten): `places.ndjson.gz`, `nearby.ndjson.gz`, `probes.json`, `manifest.json`, `LICENSE.md`.
   `search/latest.json` points at the newest. Three builds are kept.
 - `dataDate` in the manifest is the older of the two inputs' data times; publishing stops when either
-  time cannot be read or the older one is more than 30 days old.
+  time cannot be read, the older one is more than 30 days old, or one is dated more than a day after
+  the build (a clock or source error).
 - Only this workflow publishes to R2 (one run at a time); a build folder that already holds anything
   is never written to again.
 - If GitHub disables the schedule after 60 days without commits, re-enable it on the Actions page.
@@ -95,7 +96,9 @@ Local run (needs Docker for the probe check):
 - Before publishing to R2: six fixed check routes (`routing/checks.py`) must route in both modes within
   their distance bands; every edge of a scooter route must have a known road class and none may be a
   motorway; a Valhalla error or a malformed answer counts as a failed check. The tile tar must not
-  shrink by more than 15% (first build: at least 240 MB), and the extract must be at most 30 days old.
+  shrink by more than 15% (first build: at least 240 MB; a published build whose size cannot be read
+  stops the publish rather than counting as a first build), and the extract must be at most 30 days
+  old and not dated more than a day after the build.
 - A run that fails after building keeps its `graph-<buildId>` folder for diagnosis; artifacts already
   staged for publishing are in `out-<buildId>`. After success, graph removal is best effort: root-owned
   directories may remain on Linux, with a warning (the hosted runner is discarded after the job).
