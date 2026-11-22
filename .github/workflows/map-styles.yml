@@ -5,6 +5,10 @@ on:
     - cron: "0 19 1 * *"  # UTC 每月 1 號 19:00 = 台灣時間 2 號 03:00（D1 spec §2.2；搜尋與路線在 02:30）
   workflow_dispatch:
 
+# Reads the repo only; R2 is written with its own keys, never with the GitHub token (Codex task 1-3 review 4).
+permissions:
+  contents: read
+
 # One publisher at a time under map/: search/publish.py's publish() checks that a build folder is
 # empty before writing, which is only safe with a single writer (plan B Task 3).
 concurrency:

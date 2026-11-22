@@ -10,6 +10,7 @@ PLANET = "https://tiles.openfreemap.org/planet"
 MAX_BYTES = 512 * 1024
 LATIN_FIELDS = ("name:latin", "name_en", "name:en", "name_int", "name:nonlatin")
 LAYER_FIELDS = ("work", "author", "url", "license", "licenseUrl")
+SOURCE_TYPES = ("vector", "raster")
 
 
 class StyleCheckFailed(Exception):
@@ -50,6 +51,12 @@ def check_style(name: str, style: dict, changed: int, encoded: bytes) -> None:
     if (sources.get("openmaptiles") or {}).get("url") != PLANET:
         problems.append("openmaptiles source is not the OpenFreeMap planet")
     for key, source in sources.items():
+        # The app's rule (isMapStyle in src/services/mapStyle/validate.ts): only the two kinds these
+        # styles use and no other field that could point elsewhere, so nothing is published that every
+        # phone would refuse (Codex task 1-3 review 3).
+        if not isinstance(source, dict) or source.get("type") not in SOURCE_TYPES or "data" in source or "urls" in source:
+            problems.append(f"source {key} is not a vector or raster source")
+            continue
         urls = ([source["url"]] if "url" in source else []) + list(source.get("tiles") or [])
         if not urls or any(not (isinstance(u, str) and u.startswith(OFM)) for u in urls):
             problems.append(f"source {key} is not on tiles.openfreemap.org")
@@ -59,10 +66,17 @@ def check_style(name: str, style: dict, changed: int, encoded: bytes) -> None:
     if changed <= 0:
         problems.append("no label layer was changed to Chinese")
     for layer in layers:
+        if not (isinstance(layer, dict) and isinstance(layer.get("id"), str) and isinstance(layer.get("type"), str)):
+            problems.append("a layer has no id or type")
+            continue
         layout = layer.get("layout") or {}
         field = layout.get("text-field")
+        # A plain text search on purpose, not transform.py's parser: a guard that shares the parser's
+        # assumptions breaks together with it. So it also stops a label that only tests a latin field
+        # (["has", "name:latin"]) or holds one as a literal. That false alarm holds back one monthly
+        # publish (phones keep the style they have) until someone looks (Codex task 1-3 review 2).
         if field is not None and any(f in json.dumps(field, ensure_ascii=False) for f in LATIN_FIELDS):
-            problems.append(f"layer {layer.get('id')} still shows a latin name")
+            problems.append(f"layer {layer.get('id')} mentions a latin name field (check by hand if it only tests one)")
         font = layout.get("text-font")
         if font is not None and (not isinstance(font, list) or any(not str(f).startswith("Noto Sans") for f in font)):
             problems.append(f"layer {layer.get('id')} uses a font other than Noto Sans")

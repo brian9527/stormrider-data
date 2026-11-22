@@ -90,6 +90,11 @@ def test_labels_that_do_not_read_a_name_stay(field):
     ["get", "name", ["properties"]],
     {"property": "name", "stops": [[0, "a"]]},
     ["number-format", ["get", "name"], {}],
+    ["let", "label", ["get", "name"], ["var", "label"]],
+    ["var", "label"],
+    ["slice", ["get", "name"], 0, 3],
+    ["concat", "prefix", ["slice", ["get", "name"], 0, 3]],
+    ["case", ["has", "ref"], ["get", "ref"], ["number-format", ["get", "name"], {}]],
 ])
 def test_a_label_this_parser_does_not_understand_stops_the_build(field):
     style = {"version": 8, "layers": [{"id": "l", "type": "symbol", "layout": {"text-field": field}}]}

@@ -3,11 +3,13 @@ import json
 from pathlib import Path
 
 import pytest
+import requests
 
 import mapstyle.main as main_mod
 from mapstyle.checks import MAX_BYTES, StyleCheckFailed
 from mapstyle.main import build, build_manifest, content_hash, fetch_style
-from mapstyle.publish import LATEST_KEY
+from mapstyle.publish import LATEST_KEY, publish_map_styles
+from search.publish import AlreadyPublished
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -95,8 +97,21 @@ def test_a_failed_check_stops_the_whole_build():
 def test_content_hash_depends_only_on_the_published_bytes():
     a, b = build(fake_fetch), build(fake_fetch)
     assert content_hash(a) == content_hash(b)
+    b["fiord"]["upstreamSha256"] = "0" * 64
+    assert content_hash(a) == content_hash(b)
     b["fiord"]["body"] = b["fiord"]["body"] + b" "
     assert content_hash(a) != content_hash(b)
+
+
+def test_attribution_changes_affect_the_content_hash(monkeypatch):
+    import mapstyle.transform as transform_mod
+
+    before = build(fake_fetch)
+    monkeypatch.setattr(transform_mod, "MODIFICATIONS", ["StormRider 修改：中文地名；新的修改註記"])
+    after = build(fake_fetch)
+    assert content_hash(before) != content_hash(after)
+    for name in before:
+        assert before[name]["upstreamSha256"] == after[name]["upstreamSha256"]
 
 
 def test_manifest_lists_both_styles_under_the_build():
@@ -169,3 +184,137 @@ def test_unchanged_content_publishes_nothing(in_actions):
     first = list(in_actions.writes)
     assert main_mod.main([]) == 0
     assert in_actions.writes == first
+
+
+@pytest.mark.parametrize("failure", ["http", "read", "json"])
+def test_failed_download_closes_response_and_never_publishes(in_actions, monkeypatch, failure):
+    class Response(FakeResponse):
+        def raise_for_status(self):
+            if failure == "http":
+                raise requests.HTTPError("503 upstream unavailable")
+
+        def iter_content(self, size):
+            if failure == "read":
+                yield b'{"version":'
+                raise requests.ConnectionError("read timed out")
+            yield from super().iter_content(size)
+
+    response = Response([b"<html>upstream error</html>"])
+
+    class Session:
+        def get(self, url, headers, timeout, stream):
+            assert timeout == 60 and stream is True
+            return response
+
+    monkeypatch.setattr(main_mod, "fetch_style", lambda name: fetch_style(name, session=Session()))
+    error = {"http": requests.HTTPError, "read": requests.ConnectionError,
+             "json": json.JSONDecodeError}[failure]
+    with pytest.raises(error):
+        main_mod.main([])
+    assert response.closed
+    if failure == "http":
+        assert response.read == 0
+    assert in_actions.writes == [] and in_actions.deleted == []
+
+
+def test_connect_timeout_never_publishes(in_actions, monkeypatch):
+    class Session:
+        def get(self, url, **kwargs):
+            raise requests.ConnectTimeout("connect timed out")
+
+    monkeypatch.setattr(main_mod, "fetch_style",
+                        lambda name: fetch_style(name, session=Session()))
+    with pytest.raises(requests.ConnectTimeout):
+        main_mod.main([])
+    assert in_actions.writes == [] and in_actions.deleted == []
+
+
+def test_second_style_check_failure_never_touches_r2(in_actions, monkeypatch):
+    def broken(name):
+        style, raw = fake_fetch(name)
+        if name == "fiord":
+            style["version"] = 7
+        return style, raw
+
+    monkeypatch.setattr(main_mod, "fetch_style", broken)
+    monkeypatch.setattr(main_mod, "make_client", lambda *args: pytest.fail("build failed before R2"))
+    with pytest.raises(StyleCheckFailed, match="fiord"):
+        main_mod.main([])
+    assert in_actions.writes == []
+
+
+def map_files(tmp_path):
+    files = {}
+    for name in ("liberty", "fiord"):
+        path = tmp_path / f"{name}.json"
+        path.write_bytes(b"{}")
+        files[name] = path
+    return files
+
+
+@pytest.mark.parametrize("failed_name", ["liberty.json", "fiord.json", "LICENSE.md", "manifest.json", "latest.json"])
+def test_map_upload_failure_keeps_old_pointer_and_does_not_prune(tmp_path, monkeypatch, failed_name):
+    s3 = FakeS3()
+    old_id, new_id = "20261122T010000Z", "20261122T020000Z"
+    files = map_files(tmp_path)
+    publish_map_styles(s3, "bucket", old_id, files, {"dataDate": "2026-11-22"})
+    s3.objects["map/20261022T010000Z/liberty.json"] = {"body": b"partial"}
+    old_objects = dict(s3.objects)
+    original_put = s3.put_object
+
+    def failing_put(**kwargs):
+        if kwargs["Key"].rsplit("/", 1)[-1] == failed_name:
+            raise OSError("upload failed")
+        original_put(**kwargs)
+
+    monkeypatch.setattr(s3, "put_object", failing_put)
+    with pytest.raises(OSError, match="upload failed"):
+        publish_map_styles(s3, "bucket", new_id, files, {"dataDate": "2026-11-22"})
+    assert {key: s3.objects[key] for key in old_objects} == old_objects
+    assert s3.deleted == []
+
+
+def test_map_same_day_builds_keep_six_and_leave_other_roots_untouched(tmp_path):
+    s3 = FakeS3()
+    others = {f"{root}/{suffix}": {"body": b"untouched"}
+              for root in ("search", "routing", "gfs")
+              for suffix in ("latest.json", "20260101T000000Z/manifest.json")}
+    s3.objects.update(others)
+    files = map_files(tmp_path)
+    for hour in range(1, 8):
+        build_id = f"20261122T{hour:02d}0000Z"
+        publish_map_styles(s3, "bucket", build_id, files, {"dataDate": "2026-11-22"})
+    assert {key.split("/")[1] for key in s3.objects if key.startswith("map/2")} == {
+        f"20261122T{hour:02d}0000Z" for hour in range(2, 8)}
+    assert {key: s3.objects[key] for key in others} == others
+
+
+@pytest.mark.parametrize("existing", ["liberty.json", "manifest.json"])
+def test_map_refuses_to_overwrite_even_a_partial_build(tmp_path, existing):
+    s3 = FakeS3()
+    build_id = "20261122T010000Z"
+    key = f"map/{build_id}/{existing}"
+    s3.objects[key] = {"body": b"original"}
+    with pytest.raises(AlreadyPublished):
+        publish_map_styles(s3, "bucket", build_id, map_files(tmp_path), {"dataDate": "2026-11-22"})
+    assert s3.objects == {key: {"body": b"original"}}
+    assert s3.writes == [] and s3.deleted == []
+
+
+def test_prune_failure_happens_after_the_new_pointer_is_live(tmp_path, monkeypatch):
+    s3 = FakeS3()
+    old_key = "map/20260101T010000Z/liberty.json"
+    s3.objects[old_key] = {"body": b"partial"}
+
+    def fail_delete(**kwargs):
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(s3, "delete_objects", fail_delete)
+    build_id = "20261122T010000Z"
+    with pytest.raises(OSError, match="cleanup failed"):
+        publish_map_styles(s3, "bucket", build_id, map_files(tmp_path), {"dataDate": "2026-11-22"})
+    latest = json.loads(s3.objects[LATEST_KEY]["body"])
+    assert latest["buildId"] == build_id
+    assert latest["manifest"] in s3.objects
+    assert s3.writes[-1] == LATEST_KEY
+    assert old_key in s3.objects

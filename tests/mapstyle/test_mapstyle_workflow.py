@@ -18,6 +18,12 @@ def test_runs_monthly_and_on_demand_on_main_only():
     assert not re.search(r"^\s*pull_request\s*:", t, re.M)
 
 
+def test_the_github_token_can_only_read_the_repo():
+    t = text()
+    assert "\npermissions:\n  contents: read\n\n" in t
+    assert t.count("permissions:") == 1
+
+
 def test_one_publisher_at_a_time():
     assert re.search(r"concurrency:\n\s+group: update-map-styles\n\s+cancel-in-progress: false", text())
 
