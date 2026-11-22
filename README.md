@@ -124,3 +124,20 @@ routes and the 240 MB floor, but does not enforce the 30-day age limit or compar
     .venv/bin/python -I -B scripts/fetch-pbf.py --pbf-out .build/osm/taiwan-latest.osm.pbf --record .build/osm/pbf.json
     .venv/bin/python -I -B scripts/build-routing.py --workdir .build/routing \
       --pbf-file .build/osm/taiwan-latest.osm.pbf --pbf-record .build/osm/pbf.json --local-publish .build/site
+
+## Map styles (monthly)
+
+The two map styles the app uses, OpenFreeMap's Liberty (light) and Fiord (dark) with Chinese labels
+(D1 spec in the app repo, `docs/superpowers/specs/2026-11-21-d1-maplibre-design.md`).
+
+- `mapstyle/transform.py` turns every label that reads a name field into `name:zh-Hant`, else `name`,
+  and puts the credit, every upstream style and the licence notices (`mapstyle/notices/`, copied
+  verbatim from the app repo's licence research) into `metadata.stormrider:attribution`.
+- `mapstyle/checks.py` must pass before anything is published: version 8, every source, glyphs and
+  sprite on `tiles.openfreemap.org`, at least one label changed and none left showing a latin name,
+  Noto Sans only, a complete attribution, at most 512 KB.
+- The `update-map-styles` workflow runs monthly (UTC day 1, 19:00) and on demand. It publishes to R2
+  under `map/<buildId>/` (`liberty.json`, `fiord.json`, `manifest.json`, `LICENSE.md`; six builds
+  kept, `map/latest.json` written last) only when the output differs from the latest build.
+- Local, without R2: `.venv/bin/python -I -B scripts/build-map-styles.py --out .build/map-styles`.
+  The app bundles that output in `src/assets/map-styles/`.

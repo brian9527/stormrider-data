@@ -1,0 +1,36 @@
+name: update-map-styles
+
+on:
+  schedule:
+    - cron: "0 19 1 * *"  # UTC 每月 1 號 19:00 = 台灣時間 2 號 03:00（D1 spec §2.2；搜尋與路線在 02:30）
+  workflow_dispatch:
+
+# One publisher at a time under map/: search/publish.py's publish() checks that a build folder is
+# empty before writing, which is only safe with a single writer (plan B Task 3).
+concurrency:
+  group: update-map-styles
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # 用 R2 寫入金鑰，只在 main 上跑；這個 workflow 沒有 pull_request 觸發，fork 拿不到 secrets。
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      # Pinned versions, hashes required, wheels only (scripts/lock-requirements.sh, README).
+      - run: 'pip install --require-hashes --only-binary=:all: -r requirements.txt'
+      - run: pytest tests/mapstyle
+      # Publishes only when the styles changed since map/latest.json (D1 spec §2.1 item 4).
+      - run: python -m mapstyle.main
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: stormrider-weather
