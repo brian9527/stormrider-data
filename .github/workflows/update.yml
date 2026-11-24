@@ -48,3 +48,9 @@ jobs:
           || echo "::warning::could not re-enable search-data.yml; check it on the Actions page"
         env:
           GH_TOKEN: ${{ github.token }}
+      # The monthly map styles ride along the same way.
+      - run: >-
+          gh api -X PUT "repos/${{ github.repository }}/actions/workflows/map-styles.yml/enable"
+          || echo "::warning::could not re-enable map-styles.yml; check it on the Actions page"
+        env:
+          GH_TOKEN: ${{ github.token }}

@@ -147,8 +147,9 @@ def transform(name: str, upstream: dict) -> tuple[dict, int]:
 
 
 def encode(style: dict) -> bytes:
-    """The published bytes: UTF-8, sorted keys, no spaces — the same style always encodes the same."""
-    return json.dumps(style, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    """The published bytes: UTF-8, sorted keys, no spaces — the same style always encodes the same.
+    NaN and Infinity raise: Python reads and writes them, JSON.parse in the app does not."""
+    return json.dumps(style, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
 def license_markdown() -> str:

@@ -32,9 +32,13 @@ def sha256(data: bytes) -> str:
 def fetch_style(name: str, session=None, timeout: int = 60) -> tuple[dict, bytes]:
     """Reads the upstream style in chunks and stops as soon as it passes MAX_BYTES (Codex second review 9)."""
     s = session or requests.Session()
-    response = s.get(UPSTREAM.format(name=name), headers=HEADERS, timeout=timeout, stream=True)
+    url = UPSTREAM.format(name=name)
+    # transform() writes the credits of the style that was asked for, so no redirect is followed.
+    response = s.get(url, headers=HEADERS, timeout=timeout, stream=True, allow_redirects=False)
     try:
         response.raise_for_status()
+        if response.status_code != 200:
+            raise StyleCheckFailed(f"{name}: upstream answered HTTP {response.status_code}")
         chunks, total = [], 0
         for chunk in response.iter_content(64 * 1024):
             total += len(chunk)

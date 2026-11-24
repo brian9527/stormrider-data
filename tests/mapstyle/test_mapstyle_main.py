@@ -128,6 +128,8 @@ def test_manifest_lists_both_styles_under_the_build():
 
 
 class FakeResponse:
+    status_code = 200
+
     def __init__(self, chunks):
         self.chunks, self.read, self.closed = chunks, 0, False
 
@@ -147,13 +149,32 @@ def test_fetch_stops_reading_an_oversized_upstream_part_way():
     response = FakeResponse([b"x" * (MAX_BYTES // 2), b"x" * (MAX_BYTES // 2), b"x", b"never read"])
 
     class Session:
-        def get(self, url, headers, timeout, stream):
-            assert stream
+        def get(self, url, headers, timeout, stream, allow_redirects):
+            assert stream and allow_redirects is False
             return response
 
     with pytest.raises(StyleCheckFailed, match="over"):
         fetch_style("liberty", session=Session())
     assert response.read == 3 and response.closed
+
+
+@pytest.mark.parametrize("status", [301, 302, 307, 308, 204])
+def test_fetch_stops_at_anything_but_the_style_itself(status):
+    # The credits are written for the style that was asked for, so a redirect is not followed at all,
+    # not even one that leads back here (Codex final review, data 2; re-review 5).
+    response = FakeResponse([b"{}"])
+    response.status_code = status
+    asked = []
+
+    class Session:
+        def get(self, url, **kwargs):
+            asked.append((url, kwargs["allow_redirects"]))
+            return response
+
+    with pytest.raises(StyleCheckFailed, match=f"HTTP {status}"):
+        fetch_style("liberty", session=Session())
+    assert asked == [("https://tiles.openfreemap.org/styles/liberty", False)]
+    assert response.read == 0 and response.closed
 
 
 def test_publishing_runs_only_in_the_workflow(monkeypatch):
@@ -202,8 +223,8 @@ def test_failed_download_closes_response_and_never_publishes(in_actions, monkeyp
     response = Response([b"<html>upstream error</html>"])
 
     class Session:
-        def get(self, url, headers, timeout, stream):
-            assert timeout == 60 and stream is True
+        def get(self, url, headers, timeout, stream, allow_redirects):
+            assert timeout == 60 and stream is True and allow_redirects is False
             return response
 
     monkeypatch.setattr(main_mod, "fetch_style", lambda name: fetch_style(name, session=Session()))

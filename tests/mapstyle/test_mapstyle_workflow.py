@@ -46,3 +46,12 @@ def test_tests_then_publishes_to_the_weather_bucket_with_the_r2_secrets():
     assert "R2_BUCKET: stormrider-weather" in t
     for name in ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"):
         assert f"{name}: ${{{{ secrets.{name} }}}}" in t
+
+
+def test_the_weather_workflow_keeps_this_schedule_alive():
+    # GitHub may stop schedules after 60 days without repo activity, with no failed run to notice
+    # (Codex final review, data 7). Its failure must not fail the weather run, like search-data.yml.
+    update = (WORKFLOW.parent / "update.yml").read_text(encoding="utf-8")
+    step = update.split("actions/workflows/map-styles.yml/enable", 1)
+    assert len(step) == 2
+    assert step[1].lstrip('"').lstrip().startswith("|| echo \"::warning::could not re-enable map-styles.yml")

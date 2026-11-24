@@ -134,8 +134,13 @@ The two map styles the app uses, OpenFreeMap's Liberty (light) and Fiord (dark) 
   and puts the credit, every upstream style and the licence notices (`mapstyle/notices/`, copied
   verbatim from the app repo's licence research) into `metadata.stormrider:attribution`.
 - `mapstyle/checks.py` must pass before anything is published: version 8, every source, glyphs and
-  sprite on `tiles.openfreemap.org`, at least one label changed and none left showing a latin name,
-  Noto Sans only, a complete attribution, at most 512 KB.
+  sprite on `tiles.openfreemap.org`, layers with unique ids on sources that exist, the key labels of each
+  style in Chinese and none left showing a latin name, Noto Sans on every text layer, a complete
+  attribution, at most 512 KB. It holds back what the app's `isMapStyle` would refuse
+  (`src/services/mapStyle/validate.ts` in the app repo); keep the two in step. An upstream that renames a
+  key label layer or redirects stops the publish until someone looks; phones keep the style they have.
+- The weather workflow re-enables this one every six hours (keepalive), so disabling it on the Actions page
+  does not last; to pause publishing, also remove that step from `.github/workflows/update.yml`.
 - The `update-map-styles` workflow runs monthly (UTC day 1, 19:00) and on demand. It publishes to R2
   under `map/<buildId>/` (`liberty.json`, `fiord.json`, `manifest.json`, `LICENSE.md`; six builds
   kept, `map/latest.json` written last) only when the output differs from the latest build.
